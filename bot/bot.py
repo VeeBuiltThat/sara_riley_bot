@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime, timezone
+import random
+import re
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import discord
@@ -46,6 +50,54 @@ def _info_embed(title: str, description: str) -> discord.Embed:
     return discord.Embed(color=0x5865F2, title=title, description=description)
 
 
+_DURATION_RE = re.compile(r"(\d+)\s*([smhdw])", re.IGNORECASE)
+_INVITE_RE = re.compile(r"discord(?:\.gg|app\.com/invite|\.com/invite)/[a-zA-Z0-9-]+", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
+def _parse_duration(s: str) -> Optional[timedelta]:
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+    matches = _DURATION_RE.findall(s)
+    if not matches:
+        return None
+    total = sum(int(n) * units[u.lower()] for n, u in matches)
+    return timedelta(seconds=total)
+
+
+def _format_duration(td: timedelta) -> str:
+    total = int(td.total_seconds())
+    if total <= 0:
+        return "0s"
+    parts = []
+    for unit, secs in [("d", 86400), ("h", 3600), ("m", 60), ("s", 1)]:
+        v, total = divmod(total, secs)
+        if v:
+            parts.append(f"{v}{unit}")
+    return " ".join(parts)
+
+
+_8BALL = [
+    "It is certain.", "It is decidedly so.", "Without a doubt.", "Yes, definitely.",
+    "You may rely on it.", "As I see it, yes.", "Most likely.", "Outlook good.",
+    "Yes.", "Signs point to yes.", "Reply hazy, try again.", "Ask again later.",
+    "Better not tell you now.", "Cannot predict now.", "Concentrate and ask again.",
+    "Don't count on it.", "My reply is no.", "My sources say no.",
+    "Outlook not so good.", "Very doubtful.",
+]
+
+_TOPICS = [
+    "What's the most useless skill you have?",
+    "What song would you pick as your theme music?",
+    "If you could only eat one food forever, what would it be?",
+    "What's something you're irrationally afraid of?",
+    "Would you rather fight one horse-sized duck or 100 duck-sized horses?",
+    "What's the worst movie you actually enjoyed?",
+    "If you were a vegetable, what would you be and why?",
+    "What animal would make the best world leader?",
+    "If time travel were possible, would you go forwards or backwards?",
+]
+
+
 class ModerationBot(discord.Client):
     def __init__(self, config: Config, store: Store) -> None:
         intents = discord.Intents.default()
@@ -57,6 +109,7 @@ class ModerationBot(discord.Client):
         self.store = store
         self.tree = app_commands.CommandTree(self)
         self._guild = discord.Object(id=int(config.guild_id)) if config.guild_id else None
+        self._spam_tracker: dict[str, list[float]] = defaultdict(list)
         self._register_commands()
 
     async def setup_hook(self) -> None:
@@ -66,14 +119,21 @@ class ModerationBot(discord.Client):
         else:
             await self.tree.sync()
         logger.info("Slash commands synced")
+        self._reminder_task = asyncio.create_task(self._reminder_loop())
 
     async def on_ready(self) -> None:
         logger.info("Discord bot connected: %s", self.user)
         for guild in self.guilds:
             await self._get_settings(guild.id)
+            await self.store.welcome_config(str(guild.id))
+            await self.store.automod_config(str(guild.id))
+            await self.store.ticket_config(str(guild.id))
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         await self._get_settings(guild.id)
+        await self.store.welcome_config(str(guild.id))
+        await self.store.automod_config(str(guild.id))
+        await self.store.ticket_config(str(guild.id))
         logger.info("Joined guild: %s (%s)", guild.name, guild.id)
 
     # ------------------------------------------------------------------ #
@@ -244,9 +304,439 @@ class ModerationBot(discord.Client):
             await self._mod_log(interaction.guild_id, "channel_unlock", str(interaction.user.id), "", str(channel.id), "Channel permissions restored")
             await interaction.response.send_message(embed=_success_embed("Channel unlocked and previous permissions restored."), ephemeral=True)
 
-    # ------------------------------------------------------------------ #
-    # Internal helpers                                                     #
-    # ------------------------------------------------------------------ #
+        # ---- Moderation (extended) ---- #
+
+        @self.tree.command(name="unban", description="Unban a user by ID", guild=guild)
+        @app_commands.default_permissions(ban_members=True)
+        @app_commands.describe(user_id="Discord user ID to unban", reason="Reason")
+        async def unban(interaction: discord.Interaction, user_id: str, reason: str = "No reason provided") -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            try:
+                uid = int(user_id.strip())
+            except ValueError:
+                await interaction.response.send_message(embed=_error_embed("Invalid user ID."), ephemeral=True)
+                return
+            try:
+                await interaction.guild.unban(discord.Object(id=uid), reason=reason)
+            except discord.NotFound:
+                await interaction.response.send_message(embed=_error_embed("That user is not banned."), ephemeral=True)
+                return
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Unban failed: {e}"), ephemeral=True)
+                return
+            await self._mod_log(interaction.guild_id, "unban", str(interaction.user.id), str(uid), str(interaction.channel_id), reason)
+            await interaction.response.send_message(embed=_success_embed(f"Unbanned `{uid}`.\n**Reason:** {reason}"), ephemeral=True)
+
+        @self.tree.command(name="timeout", description="Timeout a member", guild=guild)
+        @app_commands.default_permissions(moderate_members=True)
+        @app_commands.describe(user="Member to timeout", duration="e.g. 10m, 1h, 1d (max 28d)", reason="Reason")
+        async def timeout_cmd(interaction: discord.Interaction, user: discord.Member, duration: str, reason: str = "No reason provided") -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            td = _parse_duration(duration)
+            if not td or td.total_seconds() <= 0:
+                await interaction.response.send_message(embed=_error_embed("Invalid duration. Examples: `10m`, `1h`, `1d`"), ephemeral=True)
+                return
+            if td.total_seconds() > 60 * 60 * 24 * 28:
+                await interaction.response.send_message(embed=_error_embed("Maximum timeout is 28 days."), ephemeral=True)
+                return
+            try:
+                await user.timeout(discord.utils.utcnow() + td, reason=reason)
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Timeout failed: {e}"), ephemeral=True)
+                return
+            await self._mod_log(interaction.guild_id, "timeout", str(interaction.user.id), str(user.id), str(interaction.channel_id), f"{_format_duration(td)}: {reason}")
+            await interaction.response.send_message(embed=_success_embed(f"Timed out {user.mention} for **{_format_duration(td)}**.\n**Reason:** {reason}"), ephemeral=True)
+
+        @self.tree.command(name="removetimeout", description="Remove a member's timeout", guild=guild)
+        @app_commands.default_permissions(moderate_members=True)
+        @app_commands.describe(user="Member to un-timeout", reason="Reason")
+        async def removetimeout(interaction: discord.Interaction, user: discord.Member, reason: str = "Timeout removed") -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            try:
+                await user.timeout(None, reason=reason)
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Failed: {e}"), ephemeral=True)
+                return
+            await self._mod_log(interaction.guild_id, "removetimeout", str(interaction.user.id), str(user.id), str(interaction.channel_id), reason)
+            await interaction.response.send_message(embed=_success_embed(f"Removed timeout from {user.mention}."), ephemeral=True)
+
+        @self.tree.command(name="delwarn", description="Delete a warning by ID", guild=guild)
+        @app_commands.default_permissions(moderate_members=True)
+        @app_commands.describe(warning_id="Warning ID shown in /warnings")
+        async def delwarn(interaction: discord.Interaction, warning_id: int) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            ok = await self.store.del_warning(warning_id, str(interaction.guild_id))
+            if ok:
+                await interaction.response.send_message(embed=_success_embed(f"Warning `#{warning_id}` deleted."), ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=_error_embed("Warning not found."), ephemeral=True)
+
+        @self.tree.command(name="clearwarns", description="Clear all warnings for a member", guild=guild)
+        @app_commands.default_permissions(moderate_members=True)
+        @app_commands.describe(user="Member whose warnings to clear")
+        async def clearwarns(interaction: discord.Interaction, user: discord.Member) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            count = await self.store.clear_warnings(str(interaction.guild_id), str(user.id))
+            await interaction.response.send_message(embed=_success_embed(f"Cleared **{count}** warning(s) for {user.mention}."), ephemeral=True)
+
+        @self.tree.command(name="purge", description="Bulk delete messages (max 100)", guild=guild)
+        @app_commands.default_permissions(manage_messages=True)
+        @app_commands.describe(count="Number of messages to delete", user="Only delete messages from this user")
+        async def purge(interaction: discord.Interaction, count: int, user: Optional[discord.Member] = None) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            count = max(1, min(100, count))
+            if not isinstance(interaction.channel, discord.TextChannel):
+                await interaction.response.send_message(embed=_error_embed("Can only purge in text channels."), ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            check = (lambda m: m.author == user) if user else None
+            try:
+                deleted = await interaction.channel.purge(limit=count, check=check)
+            except discord.HTTPException as e:
+                await interaction.followup.send(embed=_error_embed(f"Purge failed: {e}"), ephemeral=True)
+                return
+            label = f" from {user.mention}" if user else ""
+            await self._mod_log(interaction.guild_id, "purge", str(interaction.user.id), str(user.id) if user else "", str(interaction.channel_id), f"Deleted {len(deleted)} messages{label}")
+            await interaction.followup.send(embed=_success_embed(f"Deleted **{len(deleted)}** message(s){label}."), ephemeral=True)
+
+        @self.tree.command(name="slowmode", description="Set channel slowmode (0 = off)", guild=guild)
+        @app_commands.default_permissions(manage_channels=True)
+        @app_commands.describe(seconds="Seconds between messages (0–21600)")
+        async def slowmode(interaction: discord.Interaction, seconds: int = 0) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            seconds = max(0, min(21600, seconds))
+            if not isinstance(interaction.channel, discord.TextChannel):
+                await interaction.response.send_message(embed=_error_embed("Text channels only."), ephemeral=True)
+                return
+            try:
+                await interaction.channel.edit(slowmode_delay=seconds)
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Failed: {e}"), ephemeral=True)
+                return
+            msg = "Slowmode disabled." if seconds == 0 else f"Slowmode set to **{seconds}s**."
+            await interaction.response.send_message(embed=_success_embed(msg), ephemeral=True)
+
+        @self.tree.command(name="giverole", description="Give a role to a member", guild=guild)
+        @app_commands.default_permissions(manage_roles=True)
+        @app_commands.describe(user="Target member", role="Role to assign")
+        async def giverole(interaction: discord.Interaction, user: discord.Member, role: discord.Role) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            try:
+                await user.add_roles(role, reason=f"Given by {interaction.user}")
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Failed: {e}"), ephemeral=True)
+                return
+            await interaction.response.send_message(embed=_success_embed(f"Gave {role.mention} to {user.mention}."), ephemeral=True)
+
+        @self.tree.command(name="takerole", description="Remove a role from a member", guild=guild)
+        @app_commands.default_permissions(manage_roles=True)
+        @app_commands.describe(user="Target member", role="Role to remove")
+        async def takerole(interaction: discord.Interaction, user: discord.Member, role: discord.Role) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            try:
+                await user.remove_roles(role, reason=f"Removed by {interaction.user}")
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Failed: {e}"), ephemeral=True)
+                return
+            await interaction.response.send_message(embed=_success_embed(f"Removed {role.mention} from {user.mention}."), ephemeral=True)
+
+        # ---- Utility ---- #
+
+        @self.tree.command(name="ping", description="Check bot latency", guild=guild)
+        async def ping(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message(embed=_info_embed("🏓 Pong!", f"Latency: **{round(self.latency * 1000)}ms**"))
+
+        @self.tree.command(name="serverinfo", description="Show server information", guild=guild)
+        async def serverinfo(interaction: discord.Interaction) -> None:
+            g = interaction.guild
+            embed = discord.Embed(color=0x5865F2, title=g.name)
+            if g.icon:
+                embed.set_thumbnail(url=g.icon.url)
+            embed.add_field(name="Owner", value=f"<@{g.owner_id}>", inline=True)
+            embed.add_field(name="Created", value=g.created_at.strftime("%d %b %Y"), inline=True)
+            embed.add_field(name="Members", value=str(g.member_count), inline=True)
+            embed.add_field(name="Channels", value=str(len(g.channels)), inline=True)
+            embed.add_field(name="Roles", value=str(len(g.roles)), inline=True)
+            embed.add_field(name="Boost level", value=str(g.premium_tier), inline=True)
+            embed.set_footer(text=f"ID: {g.id}")
+            await interaction.response.send_message(embed=embed)
+
+        @self.tree.command(name="avatar", description="Show a user's avatar", guild=guild)
+        @app_commands.describe(user="User (defaults to yourself)")
+        async def avatar(interaction: discord.Interaction, user: Optional[discord.Member] = None) -> None:
+            target = user or interaction.user
+            embed = discord.Embed(color=0x5865F2, title=f"{target}'s avatar")
+            embed.set_image(url=target.display_avatar.url)
+            await interaction.response.send_message(embed=embed)
+
+        @self.tree.command(name="say", description="Send a message as the bot", guild=guild)
+        @app_commands.default_permissions(manage_messages=True)
+        @app_commands.describe(message="Text to send", channel="Target channel (default: current)")
+        async def say(interaction: discord.Interaction, message: str, channel: Optional[discord.TextChannel] = None) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            target = channel or interaction.channel
+            try:
+                await target.send(message[:2000])
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Failed: {e}"), ephemeral=True)
+                return
+            await interaction.response.send_message(embed=_success_embed(f"Sent to {target.mention}."), ephemeral=True)
+
+        @self.tree.command(name="embed", description="Send a custom embed", guild=guild)
+        @app_commands.default_permissions(manage_messages=True)
+        @app_commands.describe(title="Title", description="Body text", color="Hex color e.g. #5865F2", channel="Target channel")
+        async def embed_cmd(interaction: discord.Interaction, title: str = "", description: str = "", color: str = "#5865F2", channel: Optional[discord.TextChannel] = None) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
+            try:
+                color_int = int(color.lstrip("#"), 16)
+            except ValueError:
+                color_int = 0x5865F2
+            emb = discord.Embed(title=title[:256] or None, description=description[:4096] or None, color=color_int)
+            target = channel or interaction.channel
+            try:
+                await target.send(embed=emb)
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Failed: {e}"), ephemeral=True)
+                return
+            await interaction.response.send_message(embed=_success_embed(f"Embed sent to {target.mention}."), ephemeral=True)
+
+        @self.tree.command(name="poll", description="Create a reaction poll", guild=guild)
+        @app_commands.describe(question="Poll question", options="Comma-separated options (2–9)")
+        async def poll(interaction: discord.Interaction, question: str, options: str) -> None:
+            choices = [o.strip() for o in options.split(",") if o.strip()][:9]
+            if len(choices) < 2:
+                await interaction.response.send_message(embed=_error_embed("Provide at least 2 comma-separated options."), ephemeral=True)
+                return
+            emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣"]
+            lines = "\n".join(f"{emojis[i]} {c}" for i, c in enumerate(choices))
+            embed = discord.Embed(color=0xFEE75C, title=f"📊 {question[:250]}", description=lines)
+            embed.set_footer(text=f"Poll by {interaction.user}")
+            await interaction.response.send_message(embed=embed)
+            msg = await interaction.original_response()
+            for i in range(len(choices)):
+                await msg.add_reaction(emojis[i])
+
+        # ---- Tickets ---- #
+
+        @self.tree.command(name="ticket", description="Open a support ticket", guild=guild)
+        @app_commands.describe(subject="What do you need help with?")
+        async def ticket(interaction: discord.Interaction, subject: str) -> None:
+            await interaction.response.defer(ephemeral=True)
+            tc = await self.store.ticket_config(str(interaction.guild_id))
+            g = interaction.guild
+            overwrites = {
+                g.default_role: discord.PermissionOverwrite(view_channel=False),
+                interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+                g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+            }
+            if tc.support_role_id:
+                try:
+                    role = g.get_role(int(tc.support_role_id))
+                    if role:
+                        overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+                except (ValueError, TypeError):
+                    pass
+            category = g.get_channel(int(tc.category_id)) if tc.category_id else None
+            safe = re.sub(r"[^a-z0-9-]", "", subject.lower().replace(" ", "-"))[:40]
+            chan_name = f"ticket-{safe or str(interaction.user.id)[:8]}"
+            try:
+                ch = await g.create_text_channel(
+                    chan_name, overwrites=overwrites,
+                    category=category, topic=subject[:1024],
+                    reason=f"Ticket by {interaction.user}",
+                )
+            except discord.HTTPException as e:
+                await interaction.followup.send(embed=_error_embed(f"Could not create channel: {e}"), ephemeral=True)
+                return
+            tid = await self.store.create_ticket(str(g.id), str(ch.id), str(interaction.user.id), subject[:500])
+            await ch.send(
+                content=interaction.user.mention,
+                embed=discord.Embed(
+                    color=0x57F287,
+                    title=f"Ticket #{tid}: {subject[:100]}",
+                    description=tc.welcome_message,
+                ).set_footer(text="Use /ticketclose to close this ticket."),
+            )
+            if tc.log_channel_id:
+                try:
+                    lc = g.get_channel(int(tc.log_channel_id))
+                    if lc:
+                        await lc.send(embed=discord.Embed(color=0x5865F2, title=f"Ticket #{tid} opened", description=f"**User:** {interaction.user.mention}\n**Subject:** {subject[:200]}"))
+                except Exception:
+                    pass
+            await interaction.followup.send(embed=_success_embed(f"Ticket created: {ch.mention}"), ephemeral=True)
+
+        @self.tree.command(name="ticketclose", description="Close the current ticket", guild=guild)
+        @app_commands.describe(reason="Reason for closing")
+        async def ticketclose(interaction: discord.Interaction, reason: str = "Resolved") -> None:
+            t = await self.store.ticket_by_channel(str(interaction.guild_id), str(interaction.channel_id))
+            if t is None:
+                await interaction.response.send_message(embed=_error_embed("This is not a ticket channel."), ephemeral=True)
+                return
+            settings = await self._get_settings(interaction.guild_id)
+            is_creator = str(interaction.user.id) == t.creator_id
+            is_staff = isinstance(interaction.user, discord.Member) and self._has_bot_permission(interaction.user, settings)
+            if not is_creator and not is_staff:
+                await interaction.response.send_message(embed=_error_embed("Only the ticket creator or staff can close this."), ephemeral=True)
+                return
+            await self.store.close_ticket(str(interaction.guild_id), str(interaction.channel_id))
+            await interaction.response.send_message(embed=_info_embed("Ticket closed", f"**Reason:** {reason}\nChannel deletes in 5 seconds."))
+            await asyncio.sleep(5)
+            try:
+                await interaction.channel.delete(reason=f"Ticket closed: {reason}")
+            except discord.HTTPException:
+                pass
+
+        @self.tree.command(name="ticketadd", description="Add a user to this ticket", guild=guild)
+        @app_commands.describe(user="User to add")
+        async def ticketadd(interaction: discord.Interaction, user: discord.Member) -> None:
+            if await self.store.ticket_by_channel(str(interaction.guild_id), str(interaction.channel_id)) is None:
+                await interaction.response.send_message(embed=_error_embed("This is not a ticket channel."), ephemeral=True)
+                return
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("Staff only."), ephemeral=True)
+                return
+            try:
+                await interaction.channel.set_permissions(user, view_channel=True, send_messages=True)
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Failed: {e}"), ephemeral=True)
+                return
+            await interaction.response.send_message(embed=_success_embed(f"Added {user.mention} to this ticket."))
+
+        @self.tree.command(name="ticketremove", description="Remove a user from this ticket", guild=guild)
+        @app_commands.describe(user="User to remove")
+        async def ticketremove(interaction: discord.Interaction, user: discord.Member) -> None:
+            if await self.store.ticket_by_channel(str(interaction.guild_id), str(interaction.channel_id)) is None:
+                await interaction.response.send_message(embed=_error_embed("This is not a ticket channel."), ephemeral=True)
+                return
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("Staff only."), ephemeral=True)
+                return
+            try:
+                await interaction.channel.set_permissions(user, overwrite=None)
+            except discord.HTTPException as e:
+                await interaction.response.send_message(embed=_error_embed(f"Failed: {e}"), ephemeral=True)
+                return
+            await interaction.response.send_message(embed=_success_embed(f"Removed {user.mention} from this ticket."))
+
+        # ---- Reminders ---- #
+
+        @self.tree.command(name="remind", description="Set a reminder", guild=guild)
+        @app_commands.describe(duration="When e.g. 10m, 2h, 1d", message="What to remind you about")
+        async def remind(interaction: discord.Interaction, duration: str, message: str) -> None:
+            td = _parse_duration(duration)
+            if not td or td.total_seconds() <= 0:
+                await interaction.response.send_message(embed=_error_embed("Invalid duration. Examples: `10m`, `2h`, `1d`"), ephemeral=True)
+                return
+            if td.total_seconds() > 86400 * 365:
+                await interaction.response.send_message(embed=_error_embed("Maximum reminder duration is 1 year."), ephemeral=True)
+                return
+            due = datetime.now(tz=timezone.utc) + td
+            rid = await self.store.add_reminder(str(interaction.guild_id), str(interaction.user.id), str(interaction.channel_id), message[:500], due)
+            await interaction.response.send_message(
+                embed=_success_embed(f"Reminder `#{rid}` set for **{_format_duration(td)}** from now.\n> {message[:200]}"),
+                ephemeral=True,
+            )
+
+        @self.tree.command(name="reminders", description="List your active reminders", guild=guild)
+        async def reminders_cmd(interaction: discord.Interaction) -> None:
+            rs = await self.store.user_reminders(str(interaction.guild_id), str(interaction.user.id))
+            if not rs:
+                await interaction.response.send_message(embed=_info_embed("Your reminders", "No active reminders."), ephemeral=True)
+                return
+            lines = [f"`#{r.id}` <t:{int(r.due_at.timestamp())}:R> — {r.message[:60]}" for r in rs]
+            await interaction.response.send_message(embed=_info_embed(f"Your reminders ({len(rs)})", "\n".join(lines)), ephemeral=True)
+
+        @self.tree.command(name="delremind", description="Delete one of your reminders", guild=guild)
+        @app_commands.describe(reminder_id="ID from /reminders")
+        async def delremind(interaction: discord.Interaction, reminder_id: int) -> None:
+            ok = await self.store.delete_reminder(reminder_id, str(interaction.user.id))
+            if ok:
+                await interaction.response.send_message(embed=_success_embed(f"Reminder `#{reminder_id}` deleted."), ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=_error_embed("Reminder not found or not yours."), ephemeral=True)
+
+        # ---- Fun ---- #
+
+        @self.tree.command(name="8ball", description="Ask the magic 8-ball", guild=guild)
+        @app_commands.describe(question="Your question")
+        async def eightball(interaction: discord.Interaction, question: str) -> None:
+            embed = discord.Embed(color=0x5865F2, title="🎱 Magic 8-Ball")
+            embed.add_field(name="Question", value=question[:200], inline=False)
+            embed.add_field(name="Answer", value=random.choice(_8BALL), inline=False)
+            await interaction.response.send_message(embed=embed)
+
+        @self.tree.command(name="roll", description="Roll dice", guild=guild)
+        @app_commands.describe(dice="Dice notation e.g. 2d6, or max number e.g. 100")
+        async def roll(interaction: discord.Interaction, dice: str = "6") -> None:
+            rpg = re.fullmatch(r"(\d+)d(\d+)", dice.strip(), re.IGNORECASE)
+            if rpg:
+                num = max(1, min(20, int(rpg.group(1))))
+                sides = max(2, min(1_000_000, int(rpg.group(2))))
+                rolls = [random.randint(1, sides) for _ in range(num)]
+                label = ", ".join(map(str, rolls)) if num <= 10 else f"{num} rolls"
+                embed = discord.Embed(color=0x5865F2, title=f"🎲 {dice}", description=f"{label}\n**Total: {sum(rolls)}**")
+            else:
+                try:
+                    n = max(2, min(1_000_000, int(dice.strip())))
+                    embed = discord.Embed(color=0x5865F2, title=f"🎲 1–{n}", description=f"**{random.randint(1, n)}**")
+                except ValueError:
+                    embed = _error_embed("Use a number or dice notation like `2d6`.")
+            await interaction.response.send_message(embed=embed)
+
+        @self.tree.command(name="coinflip", description="Flip a coin", guild=guild)
+        async def coinflip(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message(embed=discord.Embed(color=0xFEE75C, description=f"🪙 **{random.choice(['Heads', 'Tails'])}!**"))
+
+        @self.tree.command(name="choose", description="Pick one option at random", guild=guild)
+        @app_commands.describe(options="Comma-separated choices")
+        async def choose(interaction: discord.Interaction, options: str) -> None:
+            choices = [o.strip() for o in options.split(",") if o.strip()]
+            if len(choices) < 2:
+                await interaction.response.send_message(embed=_error_embed("Provide at least 2 comma-separated options."), ephemeral=True)
+                return
+            await interaction.response.send_message(embed=discord.Embed(color=0x5865F2, description=f"🎯 I choose: **{random.choice(choices)}**"))
+
+        @self.tree.command(name="topic", description="Get a random conversation topic", guild=guild)
+        async def topic(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message(embed=discord.Embed(color=0x5865F2, description=f"💬 {random.choice(_TOPICS)}"))
+
+
 
     async def _get_settings(self, guild_id):
         return await self.store.settings(
@@ -297,6 +787,30 @@ class ModerationBot(discord.Client):
                 await ch.send(embed=embed)
         except Exception:
             pass
+
+    async def _reminder_loop(self) -> None:
+        while not self.is_closed():
+            await asyncio.sleep(30)
+            try:
+                for r in await self.store.due_reminders():
+                    await self.store.delete_reminder(r.id, r.user_id)
+                    ch = self.get_channel(int(r.channel_id))
+                    if ch:
+                        try:
+                            await ch.send(
+                                content=f"<@{r.user_id}>",
+                                embed=discord.Embed(
+                                    color=0xFEE75C, title="⏰ Reminder",
+                                    description=r.message[:2000],
+                                    timestamp=datetime.now(tz=timezone.utc),
+                                ),
+                            )
+                        except discord.HTTPException:
+                            pass
+            except Exception as exc:
+                logger.warning("Reminder loop error: %s", exc)
+
+
 
     # ------------------------------------------------------------------ #
     # Event listeners                                                      #
@@ -354,3 +868,114 @@ class ModerationBot(discord.Client):
                 await ch.send(embed=embed)
         except Exception:
             pass
+
+    async def on_member_join(self, member: discord.Member) -> None:
+        wc = await self.store.welcome_config(str(member.guild.id))
+        if wc.welcome_enabled and wc.welcome_channel_id:
+            ch = self.get_channel(int(wc.welcome_channel_id))
+            if ch:
+                try:
+                    await ch.send(wc.welcome_message.format(
+                        user=member.mention,
+                        username=str(member),
+                        server=member.guild.name,
+                        member_count=member.guild.member_count,
+                    )[:2000])
+                except discord.HTTPException:
+                    pass
+
+    async def on_member_remove(self, member: discord.Member) -> None:
+        wc = await self.store.welcome_config(str(member.guild.id))
+        if wc.goodbye_enabled and wc.goodbye_channel_id:
+            ch = self.get_channel(int(wc.goodbye_channel_id))
+            if ch:
+                try:
+                    await ch.send(wc.goodbye_message.format(
+                        user=member.mention,
+                        username=str(member),
+                        server=member.guild.name,
+                        member_count=member.guild.member_count,
+                    )[:2000])
+                except discord.HTTPException:
+                    pass
+
+    async def on_message(self, message: discord.Message) -> None:
+        if not message.guild or message.author.bot:
+            return
+        try:
+            am = await self.store.automod_config(str(message.guild.id))
+        except Exception:
+            return
+        if not am.enabled:
+            return
+
+        content = message.content
+        key = f"{message.guild.id}:{message.author.id}"
+        now = datetime.now(tz=timezone.utc).timestamp()
+        triggered, reason = False, ""
+
+        if am.anti_spam_enabled:
+            times = self._spam_tracker[key]
+            times.append(now)
+            times[:] = [t for t in times if now - t < am.anti_spam_interval]
+            if len(times) >= am.anti_spam_threshold:
+                triggered, reason = True, f"Spam ({len(times)} msgs in {am.anti_spam_interval}s)"
+                self._spam_tracker[key] = []
+
+        if not triggered and am.anti_mention_enabled:
+            if len({m.id for m in message.mentions}) >= am.anti_mention_threshold:
+                triggered, reason = True, f"Mass mention ({len(message.mentions)} users)"
+
+        if not triggered and am.anti_invite_enabled and _INVITE_RE.search(content):
+            triggered, reason = True, "Server invite link"
+
+        if not triggered and am.anti_link_enabled and _URL_RE.search(content):
+            triggered, reason = True, "Unsolicited link"
+
+        if not triggered and am.banned_words:
+            cl = content.lower()
+            for word in (w.strip().lower() for w in am.banned_words.split("\n") if w.strip()):
+                if re.search(rf"\b{re.escape(word)}\b", cl):
+                    triggered, reason = True, "Banned word"
+                    break
+
+        if not triggered:
+            return
+
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+
+        guild_id = str(message.guild.id)
+        user_id = str(message.author.id)
+        action = am.action
+
+        if action == "warn":
+            await self.store.add_warning(guild_id, user_id, str(self.user.id), f"[Automod] {reason}")
+            try:
+                await message.channel.send(
+                    embed=_error_embed(f"{message.author.mention} — {reason} — message removed."),
+                    delete_after=8,
+                )
+            except discord.HTTPException:
+                pass
+        elif action == "timeout":
+            if isinstance(message.author, discord.Member):
+                try:
+                    await message.author.timeout(discord.utils.utcnow() + timedelta(minutes=10), reason=f"Automod: {reason}")
+                except discord.HTTPException:
+                    pass
+        elif action == "kick":
+            try:
+                await message.guild.kick(message.author, reason=f"Automod: {reason}")
+            except discord.HTTPException:
+                pass
+        elif action == "ban":
+            try:
+                await message.guild.ban(message.author, reason=f"Automod: {reason}", delete_message_days=1)
+            except discord.HTTPException:
+                pass
+
+        await self.store.audit(guild_id, "automod", str(self.user.id), user_id, str(message.channel.id), f"{action}: {reason}")
+

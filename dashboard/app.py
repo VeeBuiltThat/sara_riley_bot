@@ -188,6 +188,167 @@ def audit_page():
     st.dataframe(filtered, use_container_width=True, hide_index=True)
 
 
+def welcome_page():
+    guild_id = selected_guild()
+    st.header("Welcome & Goodbye")
+    if not guild_id:
+        st.info("Select a server from the sidebar.")
+        return
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT welcome_channel_id, welcome_message, goodbye_channel_id,"
+                " goodbye_message, welcome_enabled, goodbye_enabled"
+                " FROM welcome_config WHERE guild_id=%s",
+                (guild_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        st.info("Welcome config not yet initialised — start the bot first.")
+        return
+    with st.form("welcome"):
+        st.subheader("Welcome message")
+        w_enabled = st.toggle("Enabled", value=bool(row["welcome_enabled"]))
+        w_channel = st.text_input("Welcome channel ID", value=row["welcome_channel_id"] or "")
+        w_msg = st.text_area(
+            "Message", value=row["welcome_message"] or "Welcome {user} to **{server}**!",
+            help="Variables: {user} mention, {username} tag, {server} name, {member_count}",
+        )
+        st.divider()
+        st.subheader("Goodbye message")
+        g_enabled = st.toggle("Enabled", value=bool(row["goodbye_enabled"]))
+        g_channel = st.text_input("Goodbye channel ID", value=row["goodbye_channel_id"] or "")
+        g_msg = st.text_area(
+            "Message", value=row["goodbye_message"] or "**{username}** has left the server.",
+            help="Variables: {user} mention, {username} tag, {server} name, {member_count}",
+        )
+        if st.form_submit_button("Save", type="primary", use_container_width=True):
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE welcome_config"
+                        " SET welcome_channel_id=%s, welcome_message=%s, goodbye_channel_id=%s,"
+                        "     goodbye_message=%s, welcome_enabled=%s, goodbye_enabled=%s,"
+                        "     updated_at=CURRENT_TIMESTAMP"
+                        " WHERE guild_id=%s",
+                        (w_channel.strip(), w_msg, g_channel.strip(), g_msg,
+                         int(w_enabled), int(g_enabled), guild_id),
+                    )
+            st.success("Saved.")
+
+
+def automod_page():
+    guild_id = selected_guild()
+    st.header("Automod")
+    if not guild_id:
+        st.info("Select a server from the sidebar.")
+        return
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT enabled, anti_spam_enabled, anti_spam_threshold, anti_spam_interval,"
+                " anti_mention_enabled, anti_mention_threshold,"
+                " anti_invite_enabled, anti_link_enabled, banned_words, action"
+                " FROM automod_config WHERE guild_id=%s",
+                (guild_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        st.info("Automod config not yet initialised — start the bot first.")
+        return
+    with st.form("automod"):
+        enabled = st.toggle("Enable automod", value=bool(row["enabled"]))
+        action = st.selectbox(
+            "Default action when triggered",
+            ["warn", "timeout", "kick", "ban"],
+            index=["warn", "timeout", "kick", "ban"].index(row["action"] or "warn"),
+            help="warn = send warning; timeout = 10min timeout; kick/ban = permanent.",
+        )
+        st.divider()
+        c1, c2 = st.columns(2)
+        with c1:
+            spam_on = st.toggle("Anti-spam", value=bool(row["anti_spam_enabled"]))
+            spam_msgs = st.number_input("Messages threshold", min_value=2, max_value=30, value=int(row["anti_spam_threshold"]))
+            spam_secs = st.number_input("Within N seconds", min_value=1, max_value=60, value=int(row["anti_spam_interval"]))
+            mention_on = st.toggle("Anti mass-mention", value=bool(row["anti_mention_enabled"]))
+            mention_threshold = st.number_input("Mention threshold", min_value=2, max_value=20, value=int(row["anti_mention_threshold"]))
+        with c2:
+            invite_on = st.toggle("Block server invites", value=bool(row["anti_invite_enabled"]))
+            link_on = st.toggle("Block all links", value=bool(row["anti_link_enabled"]))
+        st.divider()
+        banned_words = st.text_area(
+            "Banned words (one per line)", value=row["banned_words"] or "",
+            help="Case-insensitive whole-word matching.",
+        )
+        if st.form_submit_button("Save", type="primary", use_container_width=True):
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE automod_config"
+                        " SET enabled=%s, anti_spam_enabled=%s, anti_spam_threshold=%s,"
+                        "     anti_spam_interval=%s, anti_mention_enabled=%s, anti_mention_threshold=%s,"
+                        "     anti_invite_enabled=%s, anti_link_enabled=%s,"
+                        "     banned_words=%s, action=%s, updated_at=CURRENT_TIMESTAMP"
+                        " WHERE guild_id=%s",
+                        (int(enabled), int(spam_on), int(spam_msgs), int(spam_secs),
+                         int(mention_on), int(mention_threshold),
+                         int(invite_on), int(link_on),
+                         banned_words.strip(), action, guild_id),
+                    )
+            st.success("Saved.")
+
+
+def tickets_page():
+    guild_id = selected_guild()
+    st.header("Ticket system")
+    if not guild_id:
+        st.info("Select a server from the sidebar.")
+        return
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT category_id, log_channel_id, support_role_id, welcome_message"
+                " FROM ticket_config WHERE guild_id=%s",
+                (guild_id,),
+            )
+            row = cur.fetchone()
+        df = pd.read_sql_query(
+            "SELECT id, creator_id, subject, status, created_at"
+            " FROM tickets WHERE guild_id=%s ORDER BY created_at DESC LIMIT 100",
+            conn, params=(guild_id,),
+        )
+    if not row:
+        st.info("Ticket config not yet initialised — start the bot first.")
+        return
+    with st.form("tickets"):
+        t1, t2 = st.columns(2)
+        with t1:
+            cat = st.text_input("Category ID", value=row["category_id"] or "", help="Discord category for new ticket channels.")
+            log_ch = st.text_input("Log channel ID", value=row["log_channel_id"] or "", help="Channel where ticket opens/closes are logged.")
+        with t2:
+            support_role = st.text_input("Support role ID", value=row["support_role_id"] or "", help="Role that can see all tickets.")
+        welcome_msg = st.text_area("Ticket welcome message", value=row["welcome_message"] or "Support ticket opened. A staff member will be with you shortly.")
+        if st.form_submit_button("Save", type="primary", use_container_width=True):
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE ticket_config"
+                        " SET category_id=%s, log_channel_id=%s, support_role_id=%s,"
+                        "     welcome_message=%s, updated_at=CURRENT_TIMESTAMP"
+                        " WHERE guild_id=%s",
+                        (cat.strip(), log_ch.strip(), support_role.strip(), welcome_msg, guild_id),
+                    )
+            st.success("Saved.")
+    st.divider()
+    st.subheader("Recent tickets")
+    if df.empty:
+        st.info("No tickets yet.")
+    else:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+
+
 auth()
 
 st.sidebar.title("🛡️ Sentinel Control")
@@ -221,9 +382,14 @@ pages = {
         st.Page(overview_page, title="Overview", icon="📊"),
         st.Page(settings_page, title="Settings", icon="⚙️"),
     ],
-    "Moderation": [
+    "Logging": [
         st.Page(warnings_page, title="Warnings", icon="⚠️"),
         st.Page(audit_page, title="Audit log", icon="🧾"),
+    ],
+    "Features": [
+        st.Page(welcome_page, title="Welcome / Goodbye", icon="👋"),
+        st.Page(automod_page, title="Automod", icon="🤖"),
+        st.Page(tickets_page, title="Tickets", icon="🎫"),
     ],
 }
 pg = st.navigation(pages)

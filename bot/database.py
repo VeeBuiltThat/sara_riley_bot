@@ -30,6 +30,62 @@ class Warning:
     created_at: datetime
 
 
+@dataclass
+class WelcomeConfig:
+    guild_id: str
+    welcome_channel_id: str = ""
+    welcome_message: str = "Welcome {user} to **{server}**!"
+    goodbye_channel_id: str = ""
+    goodbye_message: str = "**{username}** has left the server."
+    welcome_enabled: bool = False
+    goodbye_enabled: bool = False
+
+
+@dataclass
+class AutomodConfig:
+    guild_id: str
+    enabled: bool = False
+    anti_spam_enabled: bool = False
+    anti_spam_threshold: int = 5
+    anti_spam_interval: int = 5
+    anti_mention_enabled: bool = False
+    anti_mention_threshold: int = 5
+    anti_invite_enabled: bool = False
+    anti_link_enabled: bool = False
+    banned_words: str = ""
+    action: str = "warn"
+
+
+@dataclass
+class Ticket:
+    id: int
+    guild_id: str
+    channel_id: str
+    creator_id: str
+    subject: str
+    status: str
+    created_at: datetime
+
+
+@dataclass
+class TicketConfig:
+    guild_id: str
+    category_id: str = ""
+    log_channel_id: str = ""
+    support_role_id: str = ""
+    welcome_message: str = "Support ticket opened. A staff member will be with you shortly."
+
+
+@dataclass
+class Reminder:
+    id: int
+    guild_id: str
+    user_id: str
+    channel_id: str
+    message: str
+    due_at: datetime
+
+
 class Store:
     def __init__(self, pool: aiomysql.Pool):
         self._pool = pool
@@ -97,6 +153,64 @@ class Store:
                 deny_bits BIGINT NOT NULL,
                 locked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (guild_id, channel_id)
+            ) CHARACTER SET utf8mb4;""",
+            """CREATE TABLE IF NOT EXISTS welcome_config (
+                guild_id VARCHAR(20) NOT NULL,
+                welcome_channel_id VARCHAR(20) NOT NULL DEFAULT '',
+                welcome_message TEXT NOT NULL DEFAULT 'Welcome {user} to **{server}**!',
+                goodbye_channel_id VARCHAR(20) NOT NULL DEFAULT '',
+                goodbye_message TEXT NOT NULL DEFAULT '**{username}** has left the server.',
+                welcome_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                goodbye_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (guild_id)
+            ) CHARACTER SET utf8mb4;""",
+            """CREATE TABLE IF NOT EXISTS automod_config (
+                guild_id VARCHAR(20) NOT NULL,
+                enabled TINYINT(1) NOT NULL DEFAULT 0,
+                anti_spam_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                anti_spam_threshold INT NOT NULL DEFAULT 5,
+                anti_spam_interval INT NOT NULL DEFAULT 5,
+                anti_mention_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                anti_mention_threshold INT NOT NULL DEFAULT 5,
+                anti_invite_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                anti_link_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                banned_words TEXT NOT NULL DEFAULT '',
+                action VARCHAR(10) NOT NULL DEFAULT 'warn',
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (guild_id)
+            ) CHARACTER SET utf8mb4;""",
+            """CREATE TABLE IF NOT EXISTS tickets (
+                id INT NOT NULL AUTO_INCREMENT,
+                guild_id VARCHAR(20) NOT NULL,
+                channel_id VARCHAR(20) NOT NULL DEFAULT '',
+                creator_id VARCHAR(20) NOT NULL,
+                subject TEXT NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'open',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                INDEX idx_tickets_guild (guild_id),
+                INDEX idx_tickets_channel (channel_id)
+            ) CHARACTER SET utf8mb4;""",
+            """CREATE TABLE IF NOT EXISTS ticket_config (
+                guild_id VARCHAR(20) NOT NULL,
+                category_id VARCHAR(20) NOT NULL DEFAULT '',
+                log_channel_id VARCHAR(20) NOT NULL DEFAULT '',
+                support_role_id VARCHAR(20) NOT NULL DEFAULT '',
+                welcome_message TEXT NOT NULL DEFAULT 'Support ticket opened. A staff member will be with you shortly.',
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (guild_id)
+            ) CHARACTER SET utf8mb4;""",
+            """CREATE TABLE IF NOT EXISTS reminders (
+                id INT NOT NULL AUTO_INCREMENT,
+                guild_id VARCHAR(20) NOT NULL DEFAULT '',
+                user_id VARCHAR(20) NOT NULL,
+                channel_id VARCHAR(20) NOT NULL,
+                message TEXT NOT NULL,
+                due_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                INDEX idx_reminders_due (due_at)
             ) CHARACTER SET utf8mb4;""",
         ]
         # Columns added after initial release — safe no-op when they already exist
@@ -223,3 +337,260 @@ class Store:
                     "DELETE FROM channel_locks WHERE guild_id=%s AND channel_id=%s",
                     (guild_id, channel_id),
                 )
+
+    # ------------------------------------------------------------------ #
+    # Warnings (extended)                                                  #
+    # ------------------------------------------------------------------ #
+
+    async def del_warning(self, warning_id: int, guild_id: str) -> bool:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM warnings WHERE id=%s AND guild_id=%s",
+                    (warning_id, guild_id),
+                )
+                return cur.rowcount > 0
+
+    async def clear_warnings(self, guild_id: str, user_id: str) -> int:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM warnings WHERE guild_id=%s AND user_id=%s",
+                    (guild_id, user_id),
+                )
+                return cur.rowcount
+
+    # ------------------------------------------------------------------ #
+    # Welcome / Goodbye                                                    #
+    # ------------------------------------------------------------------ #
+
+    async def welcome_config(self, guild_id: str) -> WelcomeConfig:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO welcome_config (guild_id) VALUES (%s)"
+                    " ON DUPLICATE KEY UPDATE guild_id=guild_id",
+                    (guild_id,),
+                )
+                await cur.execute(
+                    "SELECT guild_id, welcome_channel_id, welcome_message,"
+                    " goodbye_channel_id, goodbye_message, welcome_enabled, goodbye_enabled"
+                    " FROM welcome_config WHERE guild_id=%s",
+                    (guild_id,),
+                )
+                row = await cur.fetchone()
+        if not row:
+            return WelcomeConfig(guild_id=guild_id)
+        return WelcomeConfig(
+            guild_id=row[0], welcome_channel_id=row[1] or "",
+            welcome_message=row[2] or "Welcome {user} to **{server}**!",
+            goodbye_channel_id=row[3] or "",
+            goodbye_message=row[4] or "**{username}** has left the server.",
+            welcome_enabled=bool(row[5]), goodbye_enabled=bool(row[6]),
+        )
+
+    async def save_welcome_config(
+        self, guild_id: str,
+        welcome_channel_id: str, welcome_message: str,
+        goodbye_channel_id: str, goodbye_message: str,
+        welcome_enabled: bool, goodbye_enabled: bool,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE welcome_config"
+                    " SET welcome_channel_id=%s, welcome_message=%s,"
+                    "     goodbye_channel_id=%s, goodbye_message=%s,"
+                    "     welcome_enabled=%s, goodbye_enabled=%s, updated_at=CURRENT_TIMESTAMP"
+                    " WHERE guild_id=%s",
+                    (welcome_channel_id, welcome_message, goodbye_channel_id, goodbye_message,
+                     int(welcome_enabled), int(goodbye_enabled), guild_id),
+                )
+
+    # ------------------------------------------------------------------ #
+    # Automod                                                              #
+    # ------------------------------------------------------------------ #
+
+    async def automod_config(self, guild_id: str) -> AutomodConfig:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO automod_config (guild_id) VALUES (%s)"
+                    " ON DUPLICATE KEY UPDATE guild_id=guild_id",
+                    (guild_id,),
+                )
+                await cur.execute(
+                    "SELECT guild_id, enabled, anti_spam_enabled, anti_spam_threshold,"
+                    " anti_spam_interval, anti_mention_enabled, anti_mention_threshold,"
+                    " anti_invite_enabled, anti_link_enabled, banned_words, action"
+                    " FROM automod_config WHERE guild_id=%s",
+                    (guild_id,),
+                )
+                row = await cur.fetchone()
+        if not row:
+            return AutomodConfig(guild_id=guild_id)
+        return AutomodConfig(
+            guild_id=row[0], enabled=bool(row[1]),
+            anti_spam_enabled=bool(row[2]), anti_spam_threshold=row[3], anti_spam_interval=row[4],
+            anti_mention_enabled=bool(row[5]), anti_mention_threshold=row[6],
+            anti_invite_enabled=bool(row[7]), anti_link_enabled=bool(row[8]),
+            banned_words=row[9] or "", action=row[10] or "warn",
+        )
+
+    async def save_automod_config(
+        self, guild_id: str,
+        enabled: bool,
+        anti_spam_enabled: bool, anti_spam_threshold: int, anti_spam_interval: int,
+        anti_mention_enabled: bool, anti_mention_threshold: int,
+        anti_invite_enabled: bool, anti_link_enabled: bool,
+        banned_words: str, action: str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE automod_config"
+                    " SET enabled=%s, anti_spam_enabled=%s, anti_spam_threshold=%s,"
+                    "     anti_spam_interval=%s, anti_mention_enabled=%s, anti_mention_threshold=%s,"
+                    "     anti_invite_enabled=%s, anti_link_enabled=%s,"
+                    "     banned_words=%s, action=%s, updated_at=CURRENT_TIMESTAMP"
+                    " WHERE guild_id=%s",
+                    (int(enabled), int(anti_spam_enabled), anti_spam_threshold, anti_spam_interval,
+                     int(anti_mention_enabled), anti_mention_threshold,
+                     int(anti_invite_enabled), int(anti_link_enabled),
+                     banned_words, action, guild_id),
+                )
+
+    # ------------------------------------------------------------------ #
+    # Tickets                                                              #
+    # ------------------------------------------------------------------ #
+
+    async def create_ticket(self, guild_id: str, channel_id: str, creator_id: str, subject: str) -> int:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO tickets(guild_id,channel_id,creator_id,subject) VALUES (%s,%s,%s,%s)",
+                    (guild_id, channel_id, creator_id, subject),
+                )
+                return cur.lastrowid
+
+    async def ticket_by_channel(self, guild_id: str, channel_id: str) -> Optional[Ticket]:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT id,guild_id,channel_id,creator_id,subject,status,created_at"
+                    " FROM tickets WHERE guild_id=%s AND channel_id=%s",
+                    (guild_id, channel_id),
+                )
+                row = await cur.fetchone()
+        if not row:
+            return None
+        return Ticket(
+            id=row[0], guild_id=row[1], channel_id=row[2],
+            creator_id=row[3], subject=row[4], status=row[5],
+            created_at=row[6] if isinstance(row[6], datetime) else datetime.fromisoformat(str(row[6])),
+        )
+
+    async def close_ticket(self, guild_id: str, channel_id: str) -> None:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE tickets SET status='closed' WHERE guild_id=%s AND channel_id=%s",
+                    (guild_id, channel_id),
+                )
+
+    async def ticket_config(self, guild_id: str) -> TicketConfig:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO ticket_config (guild_id) VALUES (%s)"
+                    " ON DUPLICATE KEY UPDATE guild_id=guild_id",
+                    (guild_id,),
+                )
+                await cur.execute(
+                    "SELECT guild_id, category_id, log_channel_id, support_role_id, welcome_message"
+                    " FROM ticket_config WHERE guild_id=%s",
+                    (guild_id,),
+                )
+                row = await cur.fetchone()
+        if not row:
+            return TicketConfig(guild_id=guild_id)
+        return TicketConfig(
+            guild_id=row[0], category_id=row[1] or "",
+            log_channel_id=row[2] or "", support_role_id=row[3] or "",
+            welcome_message=row[4] or "Support ticket opened. A staff member will be with you shortly.",
+        )
+
+    async def save_ticket_config(
+        self, guild_id: str,
+        category_id: str, log_channel_id: str,
+        support_role_id: str, welcome_message: str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE ticket_config"
+                    " SET category_id=%s, log_channel_id=%s, support_role_id=%s,"
+                    "     welcome_message=%s, updated_at=CURRENT_TIMESTAMP"
+                    " WHERE guild_id=%s",
+                    (category_id, log_channel_id, support_role_id, welcome_message, guild_id),
+                )
+
+    # ------------------------------------------------------------------ #
+    # Reminders                                                            #
+    # ------------------------------------------------------------------ #
+
+    async def add_reminder(
+        self, guild_id: str, user_id: str, channel_id: str,
+        message: str, due_at: datetime,
+    ) -> int:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO reminders(guild_id,user_id,channel_id,message,due_at)"
+                    " VALUES (%s,%s,%s,%s,%s)",
+                    (guild_id, user_id, channel_id, message, due_at),
+                )
+                return cur.lastrowid
+
+    async def user_reminders(self, guild_id: str, user_id: str) -> list[Reminder]:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT id,guild_id,user_id,channel_id,message,due_at"
+                    " FROM reminders WHERE guild_id=%s AND user_id=%s ORDER BY due_at ASC LIMIT 20",
+                    (guild_id, user_id),
+                )
+                rows = await cur.fetchall()
+        return [
+            Reminder(
+                id=r[0], guild_id=r[1], user_id=r[2], channel_id=r[3], message=r[4],
+                due_at=r[5] if isinstance(r[5], datetime) else datetime.fromisoformat(str(r[5])),
+            )
+            for r in rows
+        ]
+
+    async def due_reminders(self) -> list[Reminder]:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT id,guild_id,user_id,channel_id,message,due_at"
+                    " FROM reminders WHERE due_at <= NOW() ORDER BY due_at ASC LIMIT 50",
+                )
+                rows = await cur.fetchall()
+        return [
+            Reminder(
+                id=r[0], guild_id=r[1], user_id=r[2], channel_id=r[3], message=r[4],
+                due_at=r[5] if isinstance(r[5], datetime) else datetime.fromisoformat(str(r[5])),
+            )
+            for r in rows
+        ]
+
+    async def delete_reminder(self, reminder_id: int, user_id: str) -> bool:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM reminders WHERE id=%s AND user_id=%s",
+                    (reminder_id, user_id),
+                )
+                return cur.rowcount > 0
+
