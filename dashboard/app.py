@@ -1,11 +1,13 @@
-import hashlib
 import os
+import secrets
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pandas as pd
 import pymysql
 import pymysql.cursors
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -15,8 +17,10 @@ DB_PORT = int(os.getenv("DB_PORT", "3306"))
 DB_NAME = os.getenv("DB_NAME", "")
 DB_USER = os.getenv("DB_USER", "")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 DEFAULT_LOG_CHANNEL = os.getenv("DEFAULT_LOG_CHANNEL_ID", "")
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
+DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "")
 
 st.set_page_config(page_title="Sentinel Control", layout="wide", initial_sidebar_state="expanded")
 st.markdown(
@@ -48,30 +52,113 @@ def page_heading(title: str, subtitle: str) -> None:
     st.markdown(f'<div class="panel-subtitle">{subtitle}</div>', unsafe_allow_html=True)
 
 
+def discord_api(path: str, access_token: str) -> dict | list:
+    response = requests.get(
+        f"https://discord.com/api/v10{path}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def discord_login_url(state: str) -> str:
+    query = urlencode({
+        "client_id": DISCORD_CLIENT_ID,
+        "redirect_uri": DISCORD_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "identify guilds guilds.members.read",
+        "state": state,
+    })
+    return f"https://discord.com/oauth2/authorize?{query}"
+
+
+def authenticate_with_discord() -> None:
+    code = st.query_params.get("code")
+    state = st.query_params.get("state")
+    if not code:
+        return
+    if not state or state != st.session_state.get("oauth_state"):
+        st.query_params.clear()
+        st.error("The Discord sign-in request could not be verified. Please try again.")
+        st.stop()
+    response = requests.post(
+        "https://discord.com/api/v10/oauth2/token",
+        data={
+            "client_id": DISCORD_CLIENT_ID,
+            "client_secret": DISCORD_CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": DISCORD_REDIRECT_URI,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=10,
+    )
+    if not response.ok:
+        st.query_params.clear()
+        st.error("Discord sign-in failed. Please try again.")
+        st.stop()
+    token = response.json()["access_token"]
+    try:
+        user = discord_api("/users/@me", token)
+        user_guilds = discord_api("/users/@me/guilds", token)
+    except requests.RequestException:
+        st.query_params.clear()
+        st.error("Discord account details could not be retrieved. Please try again.")
+        st.stop()
+    st.session_state.authenticated = True
+    st.session_state.discord_user_id = user["id"]
+    st.session_state.discord_username = user.get("global_name") or user["username"]
+    st.session_state.discord_access_token = token
+    st.session_state.discord_guilds = {item["id"]: item for item in user_guilds}
+    st.session_state.pop("oauth_state", None)
+    st.query_params.clear()
+    st.rerun()
+
+
 def auth() -> None:
-    if not PASSWORD:
-        st.error("DASHBOARD_PASSWORD is not configured.")
+    if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET or not DISCORD_REDIRECT_URI:
+        st.error("Discord OAuth is not configured. Set DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, and DISCORD_REDIRECT_URI.")
         st.stop()
     if st.session_state.get("authenticated"):
         return
+    authenticate_with_discord()
+    state = secrets.token_urlsafe(32)
+    st.session_state.oauth_state = state
     st.title("Sentinel Control")
-    st.caption("Server moderation configuration")
-    supplied = st.text_input("Dashboard password", type="password")
-    if st.button("Sign in", type="primary", use_container_width=True):
-        expected = hashlib.sha256(PASSWORD.encode()).digest()
-        actual = hashlib.sha256(supplied.encode()).digest()
-        if actual == expected:
-            st.session_state.authenticated = True
-            st.rerun()
-        st.error("Invalid password.")
+    st.caption("Sign in with Discord to access the servers where you hold a staff role.")
+    st.link_button("Continue with Discord", discord_login_url(state), type="primary", use_container_width=True)
     st.stop()
 
 
 def guilds() -> list[dict]:
+    member_guilds = st.session_state.get("discord_guilds", {})
+    token = st.session_state.get("discord_access_token", "")
     with connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT guild_id, server_name FROM guild_settings ORDER BY server_name, guild_id")
-            return cur.fetchall()
+            cur.execute(
+                "SELECT guild_id, server_name, owner_role_id, admin_role_id, mod_role_id"
+                " FROM guild_settings ORDER BY server_name, guild_id"
+            )
+            records = cur.fetchall()
+    allowed = []
+    for record in records:
+        discord_guild = member_guilds.get(record["guild_id"])
+        if not discord_guild:
+            continue
+        if discord_guild.get("owner"):
+            allowed.append(record)
+            continue
+        try:
+            member = discord_api(f"/users/@me/guilds/{record['guild_id']}/member", token)
+        except requests.RequestException:
+            continue
+        staff_role_ids = {value for value in (
+            record["owner_role_id"], record["admin_role_id"], record["mod_role_id"]
+        ) if value}
+        if staff_role_ids.intersection(member.get("roles", [])):
+            allowed.append(record)
+    return allowed
 
 
 def selected_guild_id() -> str:
@@ -87,6 +174,13 @@ def selected_or_empty() -> bool:
         return True
     st.info("No server has registered yet. Start the bot in the Discord server first.")
     return False
+
+
+def exact_id_columns(frame: pd.DataFrame, fields: dict[str, str]) -> pd.DataFrame:
+    for field, label in fields.items():
+        if field in frame:
+            frame[field] = frame[field].astype("string")
+    return frame.rename(columns=fields)
 
 
 def overview_page() -> None:
@@ -267,7 +361,11 @@ def warnings_page() -> None:
     if warnings.empty:
         st.info("No warnings have been issued.")
     else:
-        st.dataframe(warnings, use_container_width=True, hide_index=True)
+        st.dataframe(
+            exact_id_columns(warnings, {"user_id": "User ID", "moderator_id": "Moderator ID"}),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def audit_page() -> None:
@@ -282,12 +380,16 @@ def audit_page() -> None:
         return
     event_types = sorted(events["event_type"].dropna().unique().tolist())
     active_types = st.multiselect("Event types", event_types, default=event_types)
+    events = exact_id_columns(
+        events,
+        {"actor_id": "Actor ID", "target_id": "Target ID", "channel_id": "Channel ID"},
+    )
     st.dataframe(events[events["event_type"].isin(active_types)], use_container_width=True, hide_index=True)
 
 
 auth()
 st.sidebar.title("Sentinel Control")
-st.sidebar.caption("Moderation configuration")
+st.sidebar.caption(f"Signed in as {st.session_state['discord_username']}")
 if st.sidebar.button("Sign out", use_container_width=True):
     st.session_state.clear()
     st.rerun()
