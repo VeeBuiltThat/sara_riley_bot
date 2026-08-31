@@ -157,9 +157,9 @@ class Store:
             """CREATE TABLE IF NOT EXISTS welcome_config (
                 guild_id VARCHAR(20) NOT NULL,
                 welcome_channel_id VARCHAR(20) NOT NULL DEFAULT '',
-                welcome_message TEXT NOT NULL DEFAULT 'Welcome {user} to **{server}**!',
+                welcome_message VARCHAR(2000) NOT NULL DEFAULT 'Welcome {user} to **{server}**!',
                 goodbye_channel_id VARCHAR(20) NOT NULL DEFAULT '',
-                goodbye_message TEXT NOT NULL DEFAULT '**{username}** has left the server.',
+                goodbye_message VARCHAR(2000) NOT NULL DEFAULT '**{username}** has left the server.',
                 welcome_enabled TINYINT(1) NOT NULL DEFAULT 0,
                 goodbye_enabled TINYINT(1) NOT NULL DEFAULT 0,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -175,7 +175,7 @@ class Store:
                 anti_mention_threshold INT NOT NULL DEFAULT 5,
                 anti_invite_enabled TINYINT(1) NOT NULL DEFAULT 0,
                 anti_link_enabled TINYINT(1) NOT NULL DEFAULT 0,
-                banned_words TEXT NOT NULL DEFAULT '',
+                banned_words VARCHAR(4000) NOT NULL DEFAULT '',
                 action VARCHAR(10) NOT NULL DEFAULT 'warn',
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (guild_id)
@@ -197,7 +197,7 @@ class Store:
                 category_id VARCHAR(20) NOT NULL DEFAULT '',
                 log_channel_id VARCHAR(20) NOT NULL DEFAULT '',
                 support_role_id VARCHAR(20) NOT NULL DEFAULT '',
-                welcome_message TEXT NOT NULL DEFAULT 'Support ticket opened. A staff member will be with you shortly.',
+                welcome_message VARCHAR(2000) NOT NULL DEFAULT 'Support ticket opened. A staff member will be with you shortly.',
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (guild_id)
             ) CHARACTER SET utf8mb4;""",
