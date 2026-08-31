@@ -100,7 +100,9 @@ class Store:
         async with self._pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "INSERT IGNORE INTO guild_settings(guild_id) VALUES (%s)", (guild_id,)
+                    "INSERT INTO guild_settings (guild_id) VALUES (%s)"
+                    " ON DUPLICATE KEY UPDATE guild_id=guild_id",
+                    (guild_id,),
                 )
                 await cur.execute(
                     "SELECT guild_id, log_channel_id, log_deletes, log_edits, log_moderation, dm_warnings "
