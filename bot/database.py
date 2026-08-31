@@ -188,10 +188,6 @@ class Store:
                     (guild_id, channel_id),
                 )
 
-
-
-@dataclass
-class GuildSettings:
     guild_id: str
     log_channel_id: str = ""
     log_deletes: bool = True
