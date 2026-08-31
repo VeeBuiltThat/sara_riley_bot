@@ -9,6 +9,7 @@ from typing import Optional
 @dataclass
 class GuildSettings:
     guild_id: str
+    server_name: str = ""
     log_channel_id: str = ""
     log_deletes: bool = True
     log_edits: bool = True
@@ -111,6 +112,7 @@ class Store:
         stmts = [
             """CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id VARCHAR(20) NOT NULL,
+                server_name VARCHAR(100) NOT NULL DEFAULT '',
                 log_channel_id VARCHAR(20) NOT NULL DEFAULT '',
                 log_deletes TINYINT(1) NOT NULL DEFAULT 1,
                 log_edits TINYINT(1) NOT NULL DEFAULT 1,
@@ -215,6 +217,7 @@ class Store:
         ]
         # Columns added after initial release — safe no-op when they already exist
         alters = [
+            "ALTER TABLE guild_settings ADD COLUMN server_name VARCHAR(100) NOT NULL DEFAULT ''",
             "ALTER TABLE guild_settings ADD COLUMN owner_role_id VARCHAR(20) NOT NULL DEFAULT ''",
             "ALTER TABLE guild_settings ADD COLUMN admin_role_id VARCHAR(20) NOT NULL DEFAULT ''",
             "ALTER TABLE guild_settings ADD COLUMN mod_role_id VARCHAR(20) NOT NULL DEFAULT ''",
@@ -233,6 +236,7 @@ class Store:
     async def settings(
         self,
         guild_id: str,
+        server_name: str = "",
         default_log_channel: str = "",
         default_owner_role: str = "",
         default_admin_role: str = "",
@@ -242,13 +246,13 @@ class Store:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "INSERT INTO guild_settings"
-                    " (guild_id, log_channel_id, owner_role_id, admin_role_id, mod_role_id)"
-                    " VALUES (%s, %s, %s, %s, %s)"
-                    " ON DUPLICATE KEY UPDATE guild_id=guild_id",
-                    (guild_id, default_log_channel, default_owner_role, default_admin_role, default_mod_role),
+                    " (guild_id, server_name, log_channel_id, owner_role_id, admin_role_id, mod_role_id)"
+                    " VALUES (%s, %s, %s, %s, %s, %s)"
+                    " ON DUPLICATE KEY UPDATE server_name=VALUES(server_name)",
+                    (guild_id, server_name, default_log_channel, default_owner_role, default_admin_role, default_mod_role),
                 )
                 await cur.execute(
-                    "SELECT guild_id, log_channel_id, log_deletes, log_edits, log_moderation,"
+                    "SELECT guild_id, server_name, log_channel_id, log_deletes, log_edits, log_moderation,"
                     " dm_warnings, owner_role_id, admin_role_id, mod_role_id, mod_commands_enabled"
                     " FROM guild_settings WHERE guild_id=%s",
                     (guild_id,),
@@ -258,15 +262,16 @@ class Store:
             return GuildSettings(guild_id=guild_id)
         return GuildSettings(
             guild_id=row[0],
-            log_channel_id=row[1],
-            log_deletes=bool(row[2]),
-            log_edits=bool(row[3]),
-            log_moderation=bool(row[4]),
-            dm_warnings=bool(row[5]),
-            owner_role_id=row[6] or "",
-            admin_role_id=row[7] or "",
-            mod_role_id=row[8] or "",
-            mod_commands_enabled=bool(row[9]),
+            server_name=row[1] or "",
+            log_channel_id=row[2],
+            log_deletes=bool(row[3]),
+            log_edits=bool(row[4]),
+            log_moderation=bool(row[5]),
+            dm_warnings=bool(row[6]),
+            owner_role_id=row[7] or "",
+            admin_role_id=row[8] or "",
+            mod_role_id=row[9] or "",
+            mod_commands_enabled=bool(row[10]),
         )
 
     async def add_warning(self, guild_id: str, user_id: str, moderator_id: str, reason: str) -> int:

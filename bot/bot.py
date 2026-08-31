@@ -739,8 +739,10 @@ class ModerationBot(discord.Client):
 
 
     async def _get_settings(self, guild_id):
+        guild = self.get_guild(int(guild_id))
         return await self.store.settings(
             str(guild_id),
+            guild.name if guild else "",
             self.config.default_log_channel_id,
             self.config.default_owner_role_id,
             self.config.default_admin_role_id,
