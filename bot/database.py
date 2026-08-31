@@ -215,6 +215,10 @@ class Store:
                 INDEX idx_reminders_due (due_at)
             ) CHARACTER SET utf8mb4;""",
         ]
+        table_names = [
+            "guild_settings", "warnings", "audit_events", "channel_locks",
+            "welcome_config", "automod_config", "tickets", "ticket_config", "reminders",
+        ]
         # Columns added after initial release — safe no-op when they already exist
         alters = [
             "ALTER TABLE guild_settings ADD COLUMN server_name VARCHAR(100) NOT NULL DEFAULT ''",
@@ -225,8 +229,14 @@ class Store:
         ]
         async with self._pool.acquire() as conn:
             async with conn.cursor() as cur:
-                for stmt in stmts:
-                    await cur.execute(stmt)
+                for table_name, stmt in zip(table_names, stmts):
+                    await cur.execute(
+                        "SELECT 1 FROM information_schema.tables"
+                        " WHERE table_schema=DATABASE() AND table_name=%s",
+                        (table_name,),
+                    )
+                    if not await cur.fetchone():
+                        await cur.execute(stmt)
                 for alter in alters:
                     try:
                         await cur.execute(alter)
@@ -248,8 +258,11 @@ class Store:
                     "INSERT INTO guild_settings"
                     " (guild_id, server_name, log_channel_id, owner_role_id, admin_role_id, mod_role_id)"
                     " VALUES (%s, %s, %s, %s, %s, %s)"
-                    " ON DUPLICATE KEY UPDATE server_name=VALUES(server_name)",
-                    (guild_id, server_name, default_log_channel, default_owner_role, default_admin_role, default_mod_role),
+                    " ON DUPLICATE KEY UPDATE server_name=%s",
+                    (
+                        guild_id, server_name, default_log_channel, default_owner_role,
+                        default_admin_role, default_mod_role, server_name,
+                    ),
                 )
                 await cur.execute(
                     "SELECT guild_id, server_name, log_channel_id, log_deletes, log_edits, log_moderation,"
