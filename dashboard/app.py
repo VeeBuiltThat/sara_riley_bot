@@ -3,6 +3,7 @@ import secrets
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlencode
+from html import escape
 
 import pandas as pd
 import pymysql
@@ -127,7 +128,13 @@ def auth() -> None:
     st.session_state.oauth_state = state
     st.title("Sentinel Control")
     st.caption("Sign in with Discord to access the servers where you hold a staff role.")
-    st.link_button("Continue with Discord", discord_login_url(state), type="primary", use_container_width=True)
+    login_url = escape(discord_login_url(state), quote=True)
+    st.markdown(
+        f'<a href="{login_url}" target="_self" style="display:block; padding:.6rem 1rem; '
+        'background:#2563eb; color:white; text-align:center; text-decoration:none; border-radius:6px; '
+        'font-weight:600;">Continue with Discord</a>',
+        unsafe_allow_html=True,
+    )
     st.stop()
 
 
