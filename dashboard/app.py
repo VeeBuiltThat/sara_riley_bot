@@ -1,23 +1,39 @@
 import hashlib
 import os
-import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
+import pymysql
+import pymysql.cursors
 import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-DB_PATH = os.getenv("DATABASE_PATH", "./data/modbot.db")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
+DB_NAME = os.getenv("DB_NAME", "")
+DB_USER = os.getenv("DB_USER", "")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 
 st.set_page_config(page_title="Sentinel Control", page_icon="🛡️", layout="wide")
 
 
+@contextmanager
 def connect():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
+    conn = pymysql.connect(
+        host=DB_HOST, port=DB_PORT,
+        user=DB_USER, password=DB_PASSWORD,
+        database=DB_NAME,
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True,
+        charset="utf8mb4",
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def auth():
@@ -39,12 +55,15 @@ def auth():
 
 def ensure_guild(guild_id: str):
     with connect() as conn:
-        conn.execute("INSERT OR IGNORE INTO guild_settings(guild_id) VALUES (?)", (guild_id,))
+        with conn.cursor() as cur:
+            cur.execute("INSERT IGNORE INTO guild_settings(guild_id) VALUES (%s)", (guild_id,))
 
 
 def guild_ids():
     with connect() as conn:
-        rows = conn.execute("SELECT guild_id FROM guild_settings ORDER BY guild_id").fetchall()
+        with conn.cursor() as cur:
+            cur.execute("SELECT guild_id FROM guild_settings ORDER BY guild_id")
+            rows = cur.fetchall()
     return [r["guild_id"] for r in rows]
 
 
@@ -59,7 +78,9 @@ def settings_page():
         return
     ensure_guild(guild_id)
     with connect() as conn:
-        row = conn.execute("SELECT * FROM guild_settings WHERE guild_id=?", (guild_id,)).fetchone()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM guild_settings WHERE guild_id=%s", (guild_id,))
+            row = cur.fetchone()
     with st.form("settings"):
         log_channel = st.text_input("Log channel ID", value=row["log_channel_id"], help="Channel that receives moderation and message event embeds.")
         c1, c2 = st.columns(2)
@@ -71,10 +92,11 @@ def settings_page():
             dm_warnings = st.toggle("DM users when warned", value=bool(row["dm_warnings"]))
         if st.form_submit_button("Save settings", type="primary"):
             with connect() as conn:
-                conn.execute(
-                    """UPDATE guild_settings SET log_channel_id=?, log_deletes=?, log_edits=?, log_moderation=?, dm_warnings=?, updated_at=CURRENT_TIMESTAMP WHERE guild_id=?""",
-                    (log_channel.strip(), int(log_deletes), int(log_edits), int(log_moderation), int(dm_warnings), guild_id),
-                )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE guild_settings SET log_channel_id=%s, log_deletes=%s, log_edits=%s, log_moderation=%s, dm_warnings=%s, updated_at=CURRENT_TIMESTAMP WHERE guild_id=%s",
+                        (log_channel.strip(), int(log_deletes), int(log_edits), int(log_moderation), int(dm_warnings), guild_id),
+                    )
             st.success("Settings saved.")
 
 
@@ -107,14 +129,18 @@ def audit_page():
 def overview_page():
     st.header("Overview")
     with connect() as conn:
-        warnings = conn.execute("SELECT COUNT(*) FROM warnings").fetchone()[0]
-        events = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
-        guilds = conn.execute("SELECT COUNT(*) FROM guild_settings").fetchone()[0]
-    a,b,c = st.columns(3)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) as cnt FROM warnings")
+            warnings = cur.fetchone()["cnt"]
+            cur.execute("SELECT COUNT(*) as cnt FROM audit_events")
+            events = cur.fetchone()["cnt"]
+            cur.execute("SELECT COUNT(*) as cnt FROM guild_settings")
+            guilds = cur.fetchone()["cnt"]
+    a, b, c = st.columns(3)
     a.metric("Configured guilds", guilds)
     b.metric("Warnings", warnings)
     c.metric("Audit events", events)
-    st.markdown("Use **Guild settings** to configure logging behavior and the destination log channel. Changes are read by the Go bot without requiring a dashboard restart.")
+    st.markdown("Use **Guild settings** to configure logging behavior and the destination log channel. Changes are read by the bot without requiring a dashboard restart.")
 
 
 auth()
@@ -135,3 +161,4 @@ pages = {
 }
 pg = st.navigation(pages)
 pg.run()
+

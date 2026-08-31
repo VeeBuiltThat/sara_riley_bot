@@ -23,7 +23,7 @@ async def _run() -> None:
         logger.error("configuration error: %s", e)
         sys.exit(1)
 
-    store = await Store.open(cfg.database_path)
+    store = await Store.open(cfg.db_host, cfg.db_port, cfg.db_user, cfg.db_password, cfg.db_name)
     try:
         bot = ModerationBot(cfg, store)
         await bot.start(cfg.discord_token)
