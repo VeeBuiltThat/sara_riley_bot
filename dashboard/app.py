@@ -1,5 +1,8 @@
 import os
 import secrets
+import hmac
+import time
+from hashlib import sha256
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlencode
@@ -63,6 +66,26 @@ def discord_api(path: str, access_token: str) -> dict | list:
     return response.json()
 
 
+def signed_oauth_state() -> str:
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_urlsafe(24)
+    payload = f"{timestamp}.{nonce}"
+    signature = hmac.new(DISCORD_CLIENT_SECRET.encode(), payload.encode(), sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def oauth_state_is_valid(state: str) -> bool:
+    try:
+        timestamp, nonce, supplied_signature = state.rsplit(".", 2)
+        if int(time.time()) - int(timestamp) > 600:
+            return False
+        payload = f"{timestamp}.{nonce}"
+    except (TypeError, ValueError):
+        return False
+    expected_signature = hmac.new(DISCORD_CLIENT_SECRET.encode(), payload.encode(), sha256).hexdigest()
+    return hmac.compare_digest(supplied_signature, expected_signature)
+
+
 def discord_login_url(state: str) -> str:
     query = urlencode({
         "client_id": DISCORD_CLIENT_ID,
@@ -79,7 +102,7 @@ def authenticate_with_discord() -> None:
     state = st.query_params.get("state")
     if not code:
         return
-    if not state or state != st.session_state.get("oauth_state"):
+    if not state or not oauth_state_is_valid(state):
         st.query_params.clear()
         st.error("The Discord sign-in request could not be verified. Please try again.")
         st.stop()
@@ -112,7 +135,6 @@ def authenticate_with_discord() -> None:
     st.session_state.discord_username = user.get("global_name") or user["username"]
     st.session_state.discord_access_token = token
     st.session_state.discord_guilds = {item["id"]: item for item in user_guilds}
-    st.session_state.pop("oauth_state", None)
     st.query_params.clear()
     st.rerun()
 
@@ -124,13 +146,12 @@ def auth() -> None:
     if st.session_state.get("authenticated"):
         return
     authenticate_with_discord()
-    state = secrets.token_urlsafe(32)
-    st.session_state.oauth_state = state
+    state = signed_oauth_state()
     st.title("Sentinel Control")
     st.caption("Sign in with Discord to access the servers where you hold a staff role.")
     login_url = escape(discord_login_url(state), quote=True)
     st.markdown(
-        f'<a href="{login_url}" target="_self" style="display:block; padding:.6rem 1rem; '
+        f'<a href="{login_url}" target="_blank" rel="noopener noreferrer" style="display:block; padding:.6rem 1rem; '
         'background:#2563eb; color:white; text-align:center; text-decoration:none; border-radius:6px; '
         'font-weight:600;">Continue with Discord</a>',
         unsafe_allow_html=True,
