@@ -1,12 +1,16 @@
 import asyncio
 import logging
+import os
 import sys
+
+# Allow running as `python bot/main.py` directly (e.g. BisectHosting)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 
-from .config import load as load_config
-from .database import Store
-from .bot import ModerationBot
+from bot.config import load as load_config
+from bot.database import Store
+from bot.bot import ModerationBot
 
 logging.basicConfig(
     level=logging.INFO,
