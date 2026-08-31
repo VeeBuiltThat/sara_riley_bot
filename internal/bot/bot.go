@@ -117,50 +117,62 @@ func moderatorID(i *discordgo.InteractionCreate) string {
 	return ""
 }
 
-func ephemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Content: content, Flags: discordgo.MessageFlagsEphemeral}})
+func ephemeralEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Flags: discordgo.MessageFlagsEphemeral}})
+}
+
+func successEmbed(description string) *discordgo.MessageEmbed {
+	return &discordgo.MessageEmbed{Color: 0x57F287, Description: description}
+}
+
+func errorEmbed(description string) *discordgo.MessageEmbed {
+	return &discordgo.MessageEmbed{Color: 0xED4245, Description: description}
+}
+
+func infoEmbed(title, description string) *discordgo.MessageEmbed {
+	return &discordgo.MessageEmbed{Color: 0x5865F2, Title: title, Description: description}
 }
 
 func (b *Bot) kick(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	u := optionUser(s, i.ApplicationCommandData(), i.GuildID)
 	if u == nil {
-		ephemeral(s, i, "User not found.")
+		ephemeralEmbed(s, i, errorEmbed("User not found."))
 		return
 	}
 	reason := optionString(i.ApplicationCommandData(), "reason", "No reason provided")
 	if err := s.GuildMemberDeleteWithReason(i.GuildID, u.ID, reason); err != nil {
-		ephemeral(s, i, "Kick failed: "+err.Error())
+		ephemeralEmbed(s, i, errorEmbed("Kick failed: "+err.Error()))
 		return
 	}
 	b.modLog(i.GuildID, "kick", moderatorID(i), u.ID, i.ChannelID, reason)
-	ephemeral(s, i, fmt.Sprintf("✅ Kicked %s. Reason: %s", u.Mention(), reason))
+	ephemeralEmbed(s, i, successEmbed(fmt.Sprintf("Kicked %s.\n**Reason:** %s", u.Mention(), reason)))
 }
 
 func (b *Bot) ban(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	u := optionUser(s, i.ApplicationCommandData(), i.GuildID)
 	if u == nil {
-		ephemeral(s, i, "User not found.")
+		ephemeralEmbed(s, i, errorEmbed("User not found."))
 		return
 	}
 	reason := optionString(i.ApplicationCommandData(), "reason", "No reason provided")
 	if err := s.GuildBanCreateWithReason(i.GuildID, u.ID, reason, 0); err != nil {
-		ephemeral(s, i, "Ban failed: "+err.Error())
+		ephemeralEmbed(s, i, errorEmbed("Ban failed: "+err.Error()))
 		return
 	}
 	b.modLog(i.GuildID, "ban", moderatorID(i), u.ID, i.ChannelID, reason)
-	ephemeral(s, i, fmt.Sprintf("✅ Banned %s. Reason: %s", u.Mention(), reason))
+	ephemeralEmbed(s, i, successEmbed(fmt.Sprintf("Banned %s.\n**Reason:** %s", u.Mention(), reason)))
 }
 
 func (b *Bot) warn(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	u := optionUser(s, i.ApplicationCommandData(), i.GuildID)
 	if u == nil {
-		ephemeral(s, i, "User not found.")
+		ephemeralEmbed(s, i, errorEmbed("User not found."))
 		return
 	}
 	reason := optionString(i.ApplicationCommandData(), "reason", "")
 	id, err := b.store.AddWarning(context.Background(), i.GuildID, u.ID, moderatorID(i), reason)
 	if err != nil {
-		ephemeral(s, i, "Could not save warning.")
+		ephemeralEmbed(s, i, errorEmbed("Could not save warning."))
 		return
 	}
 	b.modLog(i.GuildID, "warning", moderatorID(i), u.ID, i.ChannelID, fmt.Sprintf("#%d: %s", id, reason))
@@ -168,25 +180,29 @@ func (b *Bot) warn(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if settings.DMWarnings {
 		ch, err := s.UserChannelCreate(u.ID)
 		if err == nil {
-			_, _ = s.ChannelMessageSend(ch.ID, fmt.Sprintf("You received a warning in **%s**: %s", guildName(s, i.GuildID), reason))
+			_, _ = s.ChannelMessageSendEmbed(ch.ID, &discordgo.MessageEmbed{
+				Color:       0xFEE75C,
+				Title:       "You received a warning",
+				Description: fmt.Sprintf("**Server:** %s\n**Reason:** %s", guildName(s, i.GuildID), reason),
+			})
 		}
 	}
-	ephemeral(s, i, fmt.Sprintf("✅ Warning #%d issued to %s.", id, u.Mention()))
+	ephemeralEmbed(s, i, successEmbed(fmt.Sprintf("Warning #%d issued to %s.", id, u.Mention())))
 }
 
 func (b *Bot) warnings(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	u := optionUser(s, i.ApplicationCommandData(), i.GuildID)
 	if u == nil {
-		ephemeral(s, i, "User not found.")
+		ephemeralEmbed(s, i, errorEmbed("User not found."))
 		return
 	}
 	ws, err := b.store.Warnings(context.Background(), i.GuildID, u.ID)
 	if err != nil {
-		ephemeral(s, i, "Could not load warnings.")
+		ephemeralEmbed(s, i, errorEmbed("Could not load warnings."))
 		return
 	}
 	if len(ws) == 0 {
-		ephemeral(s, i, "No warnings found for "+u.Mention()+".")
+		ephemeralEmbed(s, i, infoEmbed("Warnings", fmt.Sprintf("No warnings found for %s.", u.Mention())))
 		return
 	}
 	var lines []string
@@ -196,18 +212,18 @@ func (b *Bot) warnings(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 		lines = append(lines, fmt.Sprintf("`#%d` %s — <@%s> — %s", w.ID, w.CreatedAt.Format("2006-01-02"), w.ModeratorID, w.Reason))
 	}
-	ephemeral(s, i, fmt.Sprintf("**Warnings for %s (%d total)**\n%s", u.Mention(), len(ws), strings.Join(lines, "\n")))
+	ephemeralEmbed(s, i, infoEmbed(fmt.Sprintf("Warnings for %s (%d total)", u.String(), len(ws)), strings.Join(lines, "\n")))
 }
 
 func (b *Bot) userinfo(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	u := optionUser(s, i.ApplicationCommandData(), i.GuildID)
 	if u == nil {
-		ephemeral(s, i, "User not found.")
+		ephemeralEmbed(s, i, errorEmbed("User not found."))
 		return
 	}
 	m, err := s.GuildMember(i.GuildID, u.ID)
 	if err != nil {
-		ephemeral(s, i, "Could not load member information.")
+		ephemeralEmbed(s, i, errorEmbed("Could not load member information."))
 		return
 	}
 	joined := "Unknown"
@@ -223,7 +239,17 @@ func (b *Bot) userinfo(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 		roles = strings.Join(x, " ")
 	}
-	ephemeral(s, i, fmt.Sprintf("**%s** (`%s`)\nCreated: %s\nJoined: %s\nRoles: %s", u.String(), u.ID, created, joined, roles))
+	ephemeralEmbed(s, i, &discordgo.MessageEmbed{
+		Color:     0x5865F2,
+		Title:     u.String(),
+		Thumbnail: &discordgo.MessageEmbedThumbnail{URL: u.AvatarURL("128")},
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "ID", Value: u.ID, Inline: true},
+			{Name: "Created", Value: created, Inline: true},
+			{Name: "Joined", Value: joined, Inline: true},
+			{Name: "Roles", Value: roles},
+		},
+	})
 }
 
 func discordTime(id string) time.Time {
@@ -237,7 +263,7 @@ func (b *Bot) lock(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	reason := optionString(i.ApplicationCommandData(), "reason", "Channel lockdown")
 	ch, err := s.Channel(i.ChannelID)
 	if err != nil {
-		ephemeral(s, i, "Lock failed: could not load channel permissions.")
+		ephemeralEmbed(s, i, errorEmbed("Lock failed: could not load channel permissions."))
 		return
 	}
 	var had bool
@@ -251,26 +277,26 @@ func (b *Bot) lock(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 	}
 	if err := b.store.SaveChannelLock(context.Background(), i.GuildID, i.ChannelID, had, allow, deny); err != nil {
-		ephemeral(s, i, "Lock failed: could not snapshot permissions.")
+		ephemeralEmbed(s, i, errorEmbed("Lock failed: could not snapshot permissions."))
 		return
 	}
 	newAllow := allow &^ discordgo.PermissionSendMessages
 	newDeny := deny | discordgo.PermissionSendMessages
 	if err := s.ChannelPermissionSet(i.ChannelID, i.GuildID, discordgo.PermissionOverwriteTypeRole, newAllow, newDeny); err != nil {
-		ephemeral(s, i, "Lock failed: "+err.Error())
+		ephemeralEmbed(s, i, errorEmbed("Lock failed: "+err.Error()))
 		return
 	}
 	b.modLog(i.GuildID, "channel_lock", moderatorID(i), "", i.ChannelID, reason)
-	ephemeral(s, i, "🔒 Channel locked. Previous permissions were snapshotted for restoration.")
+	ephemeralEmbed(s, i, successEmbed("Channel locked. Previous permissions were snapshotted for restoration."))
 }
 func (b *Bot) unlock(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	had, allow, deny, found, err := b.store.ChannelLock(context.Background(), i.GuildID, i.ChannelID)
 	if err != nil {
-		ephemeral(s, i, "Unlock failed: could not read permission snapshot.")
+		ephemeralEmbed(s, i, errorEmbed("Unlock failed: could not read permission snapshot."))
 		return
 	}
 	if !found {
-		ephemeral(s, i, "No lockdown snapshot exists for this channel.")
+		ephemeralEmbed(s, i, errorEmbed("No lockdown snapshot exists for this channel."))
 		return
 	}
 	if had {
@@ -279,12 +305,12 @@ func (b *Bot) unlock(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		err = s.ChannelPermissionDelete(i.ChannelID, i.GuildID)
 	}
 	if err != nil {
-		ephemeral(s, i, "Unlock failed: "+err.Error())
+		ephemeralEmbed(s, i, errorEmbed("Unlock failed: "+err.Error()))
 		return
 	}
 	_ = b.store.DeleteChannelLock(context.Background(), i.GuildID, i.ChannelID)
 	b.modLog(i.GuildID, "channel_unlock", moderatorID(i), "", i.ChannelID, "Channel permissions restored")
-	ephemeral(s, i, "🔓 Channel unlocked and previous permissions restored.")
+	ephemeralEmbed(s, i, successEmbed("Channel unlocked and previous permissions restored."))
 }
 
 func guildName(s *discordgo.Session, id string) string {

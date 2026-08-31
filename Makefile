@@ -1,13 +1,13 @@
-.PHONY: bot dashboard fmt test
+.PHONY: bot dashboard fmt install
 
 bot:
-	go run ./cmd/bot
+	python -m bot.main
 
 dashboard:
 	streamlit run dashboard/app.py
 
-fmt:
-	gofmt -w ./cmd ./internal
+install:
+	pip install -r bot/requirements.txt -r dashboard/requirements.txt
 
-test:
-	go test ./...
+fmt:
+	black bot/

@@ -1,14 +1,9 @@
-FROM golang:1.23-alpine AS build
-WORKDIR /src
-COPY go.mod ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/modbot ./cmd/bot
-
-FROM alpine:3.21
-RUN addgroup -S app && adduser -S app -G app
+FROM python:3.12-slim
+RUN groupadd --system app && useradd --system --gid app app
 WORKDIR /app
-COPY --from=build /out/modbot /usr/local/bin/modbot
+COPY bot/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY bot ./bot
 RUN mkdir -p /app/data && chown -R app:app /app
 USER app
-CMD ["modbot"]
+CMD ["python", "-m", "bot.main"]
