@@ -14,6 +14,10 @@ class GuildSettings:
     log_edits: bool = True
     log_moderation: bool = True
     dm_warnings: bool = True
+    owner_role_id: str = ""
+    admin_role_id: str = ""
+    mod_role_id: str = ""
+    mod_commands_enabled: bool = True
 
 
 @dataclass
@@ -56,6 +60,10 @@ class Store:
                 log_edits TINYINT(1) NOT NULL DEFAULT 1,
                 log_moderation TINYINT(1) NOT NULL DEFAULT 1,
                 dm_warnings TINYINT(1) NOT NULL DEFAULT 1,
+                owner_role_id VARCHAR(20) NOT NULL DEFAULT '',
+                admin_role_id VARCHAR(20) NOT NULL DEFAULT '',
+                mod_role_id VARCHAR(20) NOT NULL DEFAULT '',
+                mod_commands_enabled TINYINT(1) NOT NULL DEFAULT 1,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 PRIMARY KEY (guild_id)
             ) CHARACTER SET utf8mb4;""",
@@ -91,22 +99,44 @@ class Store:
                 PRIMARY KEY (guild_id, channel_id)
             ) CHARACTER SET utf8mb4;""",
         ]
+        # Columns added after initial release — safe no-op when they already exist
+        alters = [
+            "ALTER TABLE guild_settings ADD COLUMN owner_role_id VARCHAR(20) NOT NULL DEFAULT ''",
+            "ALTER TABLE guild_settings ADD COLUMN admin_role_id VARCHAR(20) NOT NULL DEFAULT ''",
+            "ALTER TABLE guild_settings ADD COLUMN mod_role_id VARCHAR(20) NOT NULL DEFAULT ''",
+            "ALTER TABLE guild_settings ADD COLUMN mod_commands_enabled TINYINT(1) NOT NULL DEFAULT 1",
+        ]
         async with self._pool.acquire() as conn:
             async with conn.cursor() as cur:
                 for stmt in stmts:
                     await cur.execute(stmt)
+                for alter in alters:
+                    try:
+                        await cur.execute(alter)
+                    except Exception:
+                        pass
 
-    async def settings(self, guild_id: str) -> GuildSettings:
+    async def settings(
+        self,
+        guild_id: str,
+        default_log_channel: str = "",
+        default_owner_role: str = "",
+        default_admin_role: str = "",
+        default_mod_role: str = "",
+    ) -> GuildSettings:
         async with self._pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "INSERT INTO guild_settings (guild_id) VALUES (%s)"
+                    "INSERT INTO guild_settings"
+                    " (guild_id, log_channel_id, owner_role_id, admin_role_id, mod_role_id)"
+                    " VALUES (%s, %s, %s, %s, %s)"
                     " ON DUPLICATE KEY UPDATE guild_id=guild_id",
-                    (guild_id,),
+                    (guild_id, default_log_channel, default_owner_role, default_admin_role, default_mod_role),
                 )
                 await cur.execute(
-                    "SELECT guild_id, log_channel_id, log_deletes, log_edits, log_moderation, dm_warnings "
-                    "FROM guild_settings WHERE guild_id=%s",
+                    "SELECT guild_id, log_channel_id, log_deletes, log_edits, log_moderation,"
+                    " dm_warnings, owner_role_id, admin_role_id, mod_role_id, mod_commands_enabled"
+                    " FROM guild_settings WHERE guild_id=%s",
                     (guild_id,),
                 )
                 row = await cur.fetchone()
@@ -119,6 +149,10 @@ class Store:
             log_edits=bool(row[3]),
             log_moderation=bool(row[4]),
             dm_warnings=bool(row[5]),
+            owner_role_id=row[6] or "",
+            admin_role_id=row[7] or "",
+            mod_role_id=row[8] or "",
+            mod_commands_enabled=bool(row[9]),
         )
 
     async def add_warning(self, guild_id: str, user_id: str, moderator_id: str, reason: str) -> int:

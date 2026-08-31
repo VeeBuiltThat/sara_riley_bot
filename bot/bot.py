@@ -69,6 +69,12 @@ class ModerationBot(discord.Client):
 
     async def on_ready(self) -> None:
         logger.info("Discord bot connected: %s", self.user)
+        for guild in self.guilds:
+            await self._get_settings(guild.id)
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        await self._get_settings(guild.id)
+        logger.info("Joined guild: %s (%s)", guild.name, guild.id)
 
     # ------------------------------------------------------------------ #
     # Slash commands                                                       #
@@ -82,6 +88,10 @@ class ModerationBot(discord.Client):
         @app_commands.describe(user="Member to kick", reason="Reason for the moderation action")
         async def kick(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided") -> None:
             reason = reason[:500]
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
             try:
                 await interaction.guild.kick(user, reason=reason)
             except discord.HTTPException as e:
@@ -95,6 +105,10 @@ class ModerationBot(discord.Client):
         @app_commands.describe(user="Member to ban", reason="Reason for the moderation action")
         async def ban(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided") -> None:
             reason = reason[:500]
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
             try:
                 await interaction.guild.ban(user, reason=reason, delete_message_days=0)
             except discord.HTTPException as e:
@@ -108,9 +122,12 @@ class ModerationBot(discord.Client):
         @app_commands.describe(user="Member to warn", reason="Reason for the warning")
         async def warn(interaction: discord.Interaction, user: discord.Member, reason: str) -> None:
             reason = reason[:500]
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
             warning_id = await self.store.add_warning(str(interaction.guild_id), str(user.id), str(interaction.user.id), reason)
             await self._mod_log(interaction.guild_id, "warning", str(interaction.user.id), str(user.id), str(interaction.channel_id), f"#{warning_id}: {reason}")
-            settings = await self.store.settings(str(interaction.guild_id))
             if settings.dm_warnings:
                 try:
                     dm = await user.create_dm()
@@ -128,6 +145,10 @@ class ModerationBot(discord.Client):
         @app_commands.default_permissions(moderate_members=True)
         @app_commands.describe(user="Member to inspect")
         async def warnings(interaction: discord.Interaction, user: discord.Member) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
             ws = await self.store.warnings(str(interaction.guild_id), str(user.id))
             if not ws:
                 await interaction.response.send_message(embed=_info_embed("Warnings", f"No warnings found for {user.mention}."), ephemeral=True)
@@ -144,6 +165,10 @@ class ModerationBot(discord.Client):
         @self.tree.command(name="userinfo", description="Show information about a member", guild=guild)
         @app_commands.describe(user="Member to inspect")
         async def userinfo(interaction: discord.Interaction, user: discord.Member) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
             joined = user.joined_at.strftime("%a, %d %b %Y %H:%M:%S %Z") if user.joined_at else "Unknown"
             created = _discord_snowflake_time(str(user.id)).strftime("%a, %d %b %Y %H:%M:%S UTC")
             roles = " ".join(f"<@&{r.id}>" for r in user.roles[1:]) or "None"  # skip @everyone
@@ -159,6 +184,10 @@ class ModerationBot(discord.Client):
         @app_commands.default_permissions(manage_channels=True)
         @app_commands.describe(reason="Reason for the moderation action")
         async def lock(interaction: discord.Interaction, reason: str = "Channel lockdown") -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
             channel = interaction.channel
             if not isinstance(channel, discord.TextChannel):
                 await interaction.response.send_message(embed=_error_embed("This command can only be used in text channels."), ephemeral=True)
@@ -186,6 +215,10 @@ class ModerationBot(discord.Client):
         @self.tree.command(name="unlock", description="Unlock the current channel", guild=guild)
         @app_commands.default_permissions(manage_channels=True)
         async def unlock(interaction: discord.Interaction) -> None:
+            settings = await self._get_settings(interaction.guild_id)
+            if not isinstance(interaction.user, discord.Member) or not self._has_bot_permission(interaction.user, settings):
+                await interaction.response.send_message(embed=_error_embed("You don't have permission to use this command."), ephemeral=True)
+                return
             channel = interaction.channel
             if not isinstance(channel, discord.TextChannel):
                 await interaction.response.send_message(embed=_error_embed("This command can only be used in text channels."), ephemeral=True)
@@ -215,10 +248,37 @@ class ModerationBot(discord.Client):
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
 
+    async def _get_settings(self, guild_id):
+        return await self.store.settings(
+            str(guild_id),
+            self.config.default_log_channel_id,
+            self.config.default_owner_role_id,
+            self.config.default_admin_role_id,
+            self.config.default_mod_role_id,
+        )
+
+    def _has_bot_permission(self, member: discord.Member, settings) -> bool:
+        role_ids = {r.id for r in member.roles}
+        for role_id_str, need_toggle in (
+            (settings.owner_role_id, False),
+            (settings.admin_role_id, False),
+            (settings.mod_role_id, True),
+        ):
+            if not role_id_str:
+                continue
+            try:
+                if int(role_id_str) in role_ids:
+                    if need_toggle and not settings.mod_commands_enabled:
+                        continue
+                    return True
+            except ValueError:
+                pass
+        return False
+
     async def _mod_log(self, guild_id: int, event: str, actor: str, target: str, channel: str, details: str) -> None:
         await self.store.audit(str(guild_id), event, actor, target, channel, details)
         try:
-            settings = await self.store.settings(str(guild_id))
+            settings = await self._get_settings(guild_id)
         except Exception:
             return
         if not settings.log_moderation or not settings.log_channel_id:
@@ -246,7 +306,7 @@ class ModerationBot(discord.Client):
         if not message.guild:
             return
         try:
-            settings = await self.store.settings(str(message.guild.id))
+            settings = await self._get_settings(message.guild.id)
         except Exception:
             return
         if not settings.log_deletes:
@@ -274,7 +334,7 @@ class ModerationBot(discord.Client):
         if before.content == after.content:
             return
         try:
-            settings = await self.store.settings(str(before.guild.id))
+            settings = await self._get_settings(before.guild.id)
         except Exception:
             return
         if not settings.log_edits:
