@@ -1,0 +1,32 @@
+{% extends 'base.html' %}{% block content %}
+<div class="page-heading">
+    <div><span class="eyebrow">Configuration</span>
+        <h1>AI chat</h1>
+        <p>Optional Ollama replies in one selected channel.</p>
+    </div>
+</div>
+{% if not row %}<div class="empty-state">
+    <h2>Feature not initialized</h2>
+    <p>Restart the bot once so it can create this server's chat configuration.</p>
+</div>{% else %}<form method="post" class="form-stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="panel">
+        <div class="panel-head">
+            <div><h2>Chat status</h2><p>Replies are generated only for messages in the configured channel.</p></div>
+            <label class="switch-only"><input type="checkbox" name="enabled" aria-label="Enable AI chat" {% if row.enabled %}checked{% endif %}><i></i></label>
+        </div>
+        <div class="field"><label for="ai-channel-id">Channel ID</label><input id="ai-channel-id" name="channel_id" inputmode="numeric" maxlength="22" value="{{ row.channel_id or '' }}" placeholder="Discord channel ID"></div>
+        <label class="toggle-card single"><div><strong>Require a mention</strong><span>Members must mention the bot before it replies.</span></div><input type="checkbox" name="mention_only" {% if row.mention_only %}checked{% endif %}><i></i></label>
+    </div>
+    <div class="panel">
+        <div class="panel-head"><div><h2>Ollama behavior</h2><p>These settings apply only to this server.</p></div></div>
+        <div class="field"><label for="ai-model">Model</label><input id="ai-model" name="model" maxlength="100" required value="{{ row.model }}" placeholder="llama3.2:3b"></div>
+        <div class="field"><label for="ai-system-prompt">System prompt</label><textarea id="ai-system-prompt" name="system_prompt" rows="6" maxlength="2000" required>{{ row.system_prompt }}</textarea></div>
+        <div class="field-grid"><div class="field"><label for="ai-user-cooldown">Member cooldown (seconds)</label><input id="ai-user-cooldown" type="number" name="user_cooldown_seconds" min="5" max="3600" required value="{{ row.user_cooldown_seconds }}"></div><div class="field"><label for="ai-channel-cooldown">Channel cooldown (seconds)</label><input id="ai-channel-cooldown" type="number" name="channel_cooldown_seconds" min="3" max="600" required value="{{ row.channel_cooldown_seconds }}"></div></div>
+    </div>
+    <div class="panel">
+        <div class="panel-head"><div><h2>Memory</h2><p>Staff-authored context for server facts, persona notes, running jokes, or FAQs. It is never automatically populated from member chat.</p></div></div>
+        <div class="field"><label for="ai-staff-memory">Staff memory</label><textarea id="ai-staff-memory" name="staff_memory" rows="10" maxlength="4000">{{ row.staff_memory or '' }}</textarea></div>
+    </div>
+    <div class="sticky-actions"><span>Ollama runs locally; responses are never posted without a member message.</span><button class="button primary" type="submit">Save AI chat</button></div>
+</form>{% endif %}
+{% endblock %}

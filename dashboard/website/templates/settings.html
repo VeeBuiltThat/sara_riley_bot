@@ -1,0 +1,52 @@
+{% extends 'base.html' %}{% block content %}
+<div class="page-heading">
+    <div><span class="eyebrow">Control</span>
+        <h1>Server settings</h1>
+        <p>Logging, staff access and moderation preferences.</p>
+    </div>
+</div>
+<form method="post" class="form-stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="panel">
+        <div class="panel-head">
+            <div>
+                <h2>Logging</h2>
+                <p>Choose what Simon "Ghost" Riley sends to your moderation log.</p>
+            </div>
+        </div>
+        <div class="field"><label>Log channel ID</label><input name="log_channel_id"
+                value="{{ row.log_channel_id or '' }}" placeholder="{{ default_log_channel or 'Discord channel ID' }}">
+        </div>
+        <div class="toggle-grid">
+            {% for name,label,desc,val in [('log_deletes','Deleted messages','Record deleted message
+            events.',row.log_deletes),('log_edits','Edited messages','Record before/after edits when
+            available.',row.log_edits),('log_moderation','Moderation actions','Record staff moderation
+            actions.',row.log_moderation),('dm_warnings','Warning DMs','DM users when a warning is
+            issued.',row.dm_warnings)] %}<label class="toggle-card">
+                <div><strong>{{ label }}</strong><span>{{ desc }}</span></div><input type="checkbox" name="{{ name }}"
+                    {% if val %}checked{% endif %}><i></i>
+            </label>{% endfor %}</div>
+    </div>
+    <div class="panel">
+        <div class="panel-head">
+            <div>
+                <h2>Staff access</h2>
+                <p>These roles determine who can use privileged bot and dashboard controls.</p>
+            </div>
+        </div>
+        <div class="field-grid three">
+                <div class="field"><label>Owner role ID</label><input name="owner_role_id" aria-label="Owner role ID"
+                    value="{{ row.owner_role_id or '' }}"></div>
+                <div class="field"><label>Admin role ID</label><input name="admin_role_id" aria-label="Admin role ID"
+                    value="{{ row.admin_role_id or '' }}"></div>
+                <div class="field"><label>Moderator role ID</label><input name="mod_role_id" aria-label="Moderator role ID"
+                    value="{{ row.mod_role_id or '' }}"></div>
+        </div><label class="toggle-card single">
+            <div><strong>Moderator commands</strong><span>Allow the configured moderator role to use moderation
+                    commands.</span></div><input type="checkbox" name="mod_commands_enabled" {% if
+                row.mod_commands_enabled %}checked{% endif %}><i></i>
+        </label>
+    </div>
+    <div class="sticky-actions"><span>Changes apply to {{ guild.server_name or guild.guild_id }}.</span><button
+            class="button primary" type="submit">Save changes</button></div>
+</form>
+{% endblock %}

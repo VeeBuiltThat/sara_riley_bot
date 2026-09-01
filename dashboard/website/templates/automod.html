@@ -1,0 +1,92 @@
+{% extends 'base.html' %}{% block content %}
+<div class="page-heading">
+    <div><span class="eyebrow">Configuration</span>
+        <h1>Automod</h1>
+        <p>Automatic enforcement for common message abuse.</p>
+    </div>
+</div>
+{% if not row %}<div class="empty-state">
+    <h2>Feature not initialized</h2>
+    <p>Restart the bot once so it can create this server's automod configuration.</p>
+</div>{% else %}<form method="post" class="form-stack"><input type="hidden" name="csrf_token"
+        value="{{ csrf_token() }}">
+    <div class="panel">
+        <div class="panel-head">
+            <div>
+                <h2>Automod status</h2>
+                <p>Enable automatic moderation and choose the enforcement action.</p>
+            </div><label class="switch-only"><input type="checkbox" name="enabled" aria-label="Enable automod" {% if row.enabled %}checked{% endif
+                    %}><i></i></label>
+        </div>
+        <div class="field compact"><label>Action</label><select name="action" aria-label="Action">{% for action in
+                ['warn','timeout','kick','ban'] %}<option {% if row.action==action %}selected{% endif %}>{{ action }}
+                </option>{% endfor %}</select></div>
+    </div>
+    <div class="panel">
+        <div class="panel-head">
+            <div>
+                <h2>Protection rules</h2>
+                <p>Turn individual filters on or off.</p>
+            </div>
+        </div>
+        <div class="rules-grid"><label class="rule">
+                <div><strong>Message spam</strong><span>Act on repeated messages in a short window.</span></div><input
+                    type="checkbox" name="anti_spam_enabled" {% if row.anti_spam_enabled %}checked{% endif %}>
+            </label>
+            <div class="nested-fields">
+                <div class="field"><label>Message threshold</label><input type="number" min="2" max="30" aria-label="Message threshold"
+                        name="anti_spam_threshold" value="{{ row.anti_spam_threshold }}"></div>
+                <div class="field"><label>Window (seconds)</label><input type="number" min="1" max="60" aria-label="Spam window in seconds"
+                        name="anti_spam_interval" value="{{ row.anti_spam_interval }}"></div>
+            </div><label class="rule">
+                <div><strong>Mass mentions</strong><span>Act when a message tags too many users.</span></div><input
+                    type="checkbox" name="anti_mention_enabled" {% if row.anti_mention_enabled %}checked{% endif %}>
+            </label>
+                <div class="field nested-one"><label>Mention threshold</label><input type="number" min="2" max="20" aria-label="Mention threshold"
+                    name="anti_mention_threshold" value="{{ row.anti_mention_threshold }}"></div><label class="rule">
+                <div><strong>Discord invites</strong><span>Block Discord invite links.</span></div><input
+                    type="checkbox" name="anti_invite_enabled" {% if row.anti_invite_enabled %}checked{% endif %}>
+            </label><label class="rule">
+                <div><strong>External links</strong><span>Block all links posted by members.</span></div><input
+                    type="checkbox" name="anti_link_enabled" {% if row.anti_link_enabled %}checked{% endif %}>
+            </label>
+            <label class="rule">
+                <div><strong>Excessive caps</strong><span>Act on messages with at least 10 letters that exceed the uppercase limit.</span></div><input
+                    type="checkbox" name="anti_caps_enabled" aria-label="Enable excessive caps protection" {% if row.anti_caps_enabled %}checked{% endif %}>
+            </label>
+            <div class="field nested-one"><label for="anti-caps-threshold">Uppercase threshold (%)</label><input id="anti-caps-threshold" type="number" min="50" max="100" aria-label="Uppercase threshold percentage"
+                name="anti_caps_threshold" value="{{ row.anti_caps_threshold }}"></div>
+            <label class="rule">
+                <div><strong>Emoji spam</strong><span>Act when a message contains too many Unicode emoji.</span></div><input
+                    type="checkbox" name="anti_emoji_enabled" aria-label="Enable emoji spam protection" {% if row.anti_emoji_enabled %}checked{% endif %}>
+            </label>
+            <div class="field nested-one"><label for="anti-emoji-threshold">Emoji threshold</label><input id="anti-emoji-threshold" type="number" min="1" max="50" aria-label="Emoji threshold"
+                name="anti_emoji_threshold" value="{{ row.anti_emoji_threshold }}"></div>
+        </div>
+    </div>
+    <div class="panel">
+        <div class="panel-head">
+            <div>
+                <h2>Exemptions</h2>
+                <p>Exempt members with these roles or messages sent in these channels. Enter Discord IDs separated by commas or spaces.</p>
+            </div>
+        </div>
+        <div class="nested-fields">
+            <div class="field"><label for="exempt-role-ids">Exempt role IDs</label><input id="exempt-role-ids" name="exempt_role_ids" maxlength="1000" aria-label="Exempt role IDs" value="{{ row.exempt_role_ids or '' }}" placeholder="123456789012345678, 234567890123456789"></div>
+            <div class="field"><label for="exempt-channel-ids">Exempt channel IDs</label><input id="exempt-channel-ids" name="exempt_channel_ids" maxlength="1000" aria-label="Exempt channel IDs" value="{{ row.exempt_channel_ids or '' }}" placeholder="123456789012345678, 234567890123456789"></div>
+        </div>
+    </div>
+    <div class="panel">
+        <div class="panel-head">
+            <div>
+                <h2>Banned words</h2>
+                <p>Enter one word or phrase per line.</p>
+            </div>
+        </div>
+        <div class="field"><textarea name="banned_words" aria-label="Banned words" rows="8" maxlength="4000"
+                placeholder="word or phrase">{{ row.banned_words or '' }}</textarea></div>
+    </div>
+    <div class="sticky-actions"><span>Rules are enforced by the bot in Discord.</span><button class="button primary"
+            type="submit">Save automod</button></div>
+</form>{% endif %}
+{% endblock %}

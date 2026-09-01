@@ -1,0 +1,50 @@
+{% extends 'base.html' %}{% block content %}
+<div class="page-heading">
+    <div><span class="eyebrow">Configuration</span>
+        <h1>Custom commands</h1>
+        <p>Create literal responses for server-specific prefix commands.</p>
+    </div>
+</div>
+<form method="post" class="panel form-stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input
+        type="hidden" name="action" value="create">
+    <div class="panel-head">
+        <div>
+            <h2>New command</h2>
+            <p>Triggers use lowercase letters, numbers, hyphens, and underscores.</p>
+        </div>
+    </div>
+    <div class="field-grid">
+        <div class="field"><label>Trigger</label><input name="trigger" aria-label="Trigger" maxlength="32" pattern="[a-z0-9_-]{1,32}"
+                placeholder="rules" required></div>
+        <div class="field"><label>Response</label><textarea name="response" aria-label="Response" rows="4" maxlength="2000"
+                placeholder="The server rules are available in..." required></textarea></div>
+    </div>
+    <label class="toggle-card single"><div><strong>Enabled</strong><span>Allow members to invoke this command.</span></div><input
+            type="checkbox" name="enabled" checked><i></i></label>
+    <div class="panel-actions"><button class="button primary" type="submit">Create command</button></div>
+</form>
+<div class="panel table-panel">
+    <div class="panel-head">
+        <div>
+            <h2>Server commands</h2>
+            <p>Built-in bot commands always take priority.</p>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Trigger</th><th>Response</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>{% for command in rows %}<tr>
+                <td class="mono">!{{ command.trigger }}</td>
+                <td class="reason-cell">{{ command.response }}</td>
+                <td><span class="badge {{ 'open' if command.enabled else 'closed' }}">{{ 'Enabled' if command.enabled else 'Disabled' }}</span></td>
+                <td><form method="post" class="panel-actions"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input
+                        type="hidden" name="action" value="enabled"><input type="hidden" name="command_id" value="{{ command.id }}"><input
+                        type="hidden" name="enabled" value="{{ 0 if command.enabled else 1 }}"><button class="button secondary" type="submit">{{ 'Disable' if command.enabled else 'Enable' }}</button></form>
+                    <form method="post" class="panel-actions"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input
+                        type="hidden" name="action" value="delete"><input type="hidden" name="command_id" value="{{ command.id }}"><button
+                        class="text-button" type="submit">Delete</button></form></td>
+            </tr>{% else %}<tr><td colspan="4" class="empty-cell">No custom commands have been created.</td></tr>{% endfor %}</tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

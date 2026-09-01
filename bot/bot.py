@@ -4,11 +4,13 @@ import asyncio
 import logging
 import random
 import re
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import discord
+import aiohttp
 from discord import app_commands
 
 from .config import Config
@@ -53,6 +55,8 @@ def _info_embed(title: str, description: str) -> discord.Embed:
 _DURATION_RE = re.compile(r"(\d+)\s*([smhdw])", re.IGNORECASE)
 _INVITE_RE = re.compile(r"discord(?:\.gg|app\.com/invite|\.com/invite)/[a-zA-Z0-9-]+", re.IGNORECASE)
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_DISCORD_ID_RE = re.compile(r"\d{15,22}")
+_EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]")
 
 
 def _parse_duration(s: str) -> Optional[timedelta]:
@@ -74,6 +78,10 @@ def _format_duration(td: timedelta) -> str:
         if v:
             parts.append(f"{v}{unit}")
     return " ".join(parts)
+
+
+def _parse_discord_ids(value: str) -> set[str]:
+    return {token for token in re.split(r"[\s,]+", value.strip()) if _DISCORD_ID_RE.fullmatch(token)}
 
 
 _8BALL = [
@@ -110,6 +118,8 @@ class ModerationBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self._guild = discord.Object(id=int(config.guild_id)) if config.guild_id else None
         self._spam_tracker: dict[str, list[float]] = defaultdict(list)
+        self._ai_user_cooldowns: dict[str, float] = {}
+        self._ai_channel_cooldowns: dict[str, float] = {}
         self._register_commands()
 
     async def setup_hook(self) -> None:
@@ -127,12 +137,14 @@ class ModerationBot(discord.Client):
             await self._get_settings(guild.id)
             await self.store.welcome_config(str(guild.id))
             await self.store.automod_config(str(guild.id))
+            await self.store.ai_chat_config(str(guild.id))
             await self.store.ticket_config(str(guild.id))
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         await self._get_settings(guild.id)
         await self.store.welcome_config(str(guild.id))
         await self.store.automod_config(str(guild.id))
+        await self.store.ai_chat_config(str(guild.id))
         await self.store.ticket_config(str(guild.id))
         logger.info("Joined guild: %s (%s)", guild.name, guild.id)
 
@@ -901,15 +913,91 @@ class ModerationBot(discord.Client):
                 except discord.HTTPException:
                     pass
 
-    async def on_message(self, message: discord.Message) -> None:
-        if not message.guild or message.author.bot:
-            return
+    async def _handle_prefix_command(self, message: discord.Message) -> bool:
+        prefix = self.config.command_prefix
+        if not message.content.startswith(prefix):
+            return False
+        command_line = message.content[len(prefix):].strip()
+        if not command_line:
+            return True
+        command, _, arguments = command_line.partition(" ")
+        command = command.lower()
+        arguments = arguments.strip()
+
+        if command == "help":
+            await message.channel.send(
+                embed=_info_embed(
+                    "Commands",
+                    f"`{prefix}ping`, `{prefix}roll [number|NdN]`, `{prefix}coinflip`, "
+                    f"`{prefix}choose option 1, option 2`, `{prefix}topic`",
+                )
+            )
+        elif command == "ping":
+            await message.channel.send(
+                embed=_info_embed("Pong!", f"Latency: **{round(self.latency * 1000)}ms**")
+            )
+        elif command == "coinflip":
+            await message.channel.send(
+                embed=discord.Embed(
+                    color=0xFEE75C,
+                    description=f"**{random.choice(['Heads', 'Tails'])}!**",
+                )
+            )
+        elif command == "topic":
+            await message.channel.send(
+                embed=discord.Embed(color=0x5865F2, description=random.choice(_TOPICS))
+            )
+        elif command == "choose":
+            choices = [choice.strip() for choice in arguments.split(",") if choice.strip()]
+            if len(choices) < 2:
+                await message.channel.send(embed=_error_embed("Provide at least two comma-separated options."))
+            else:
+                await message.channel.send(
+                    embed=discord.Embed(
+                        color=0x5865F2,
+                        description=f"I choose: **{random.choice(choices)}**",
+                    )
+                )
+        elif command == "roll":
+            dice = arguments or "6"
+            roll_match = re.fullmatch(r"(\d+)d(\d+)", dice, re.IGNORECASE)
+            if roll_match:
+                count = max(1, min(20, int(roll_match.group(1))))
+                sides = max(2, min(1_000_000, int(roll_match.group(2))))
+                rolls = [random.randint(1, sides) for _ in range(count)]
+                result = ", ".join(map(str, rolls)) if count <= 10 else f"{count} rolls"
+                embed = discord.Embed(color=0x5865F2, title=dice, description=f"{result}\n**Total: {sum(rolls)}**")
+            else:
+                try:
+                    sides = max(2, min(1_000_000, int(dice)))
+                    embed = discord.Embed(color=0x5865F2, title=f"1-{sides}", description=f"**{random.randint(1, sides)}**")
+                except ValueError:
+                    embed = _error_embed("Use a number or dice notation like `2d6`.")
+            await message.channel.send(embed=embed)
+        else:
+            custom_command = await self.store.custom_command(str(message.guild.id), command)
+            if custom_command:
+                await message.channel.send(custom_command.response[:2000])
+            else:
+                await message.channel.send(
+                    embed=_error_embed(f"Unknown command. Use `{prefix}help` to list available commands.")
+                )
+        return True
+
+    async def _automod_blocked(self, message: discord.Message) -> bool:
         try:
             am = await self.store.automod_config(str(message.guild.id))
         except Exception:
-            return
+            return False
         if not am.enabled:
-            return
+            return False
+
+        exempt_role_ids = _parse_discord_ids(am.exempt_role_ids)
+        author_roles = getattr(message.author, "roles", ())
+        if exempt_role_ids and any(str(role.id) in exempt_role_ids for role in author_roles):
+            return False
+        if str(message.channel.id) in _parse_discord_ids(am.exempt_channel_ids):
+            return False
 
         content = message.content
         key = f"{message.guild.id}:{message.author.id}"
@@ -934,6 +1022,18 @@ class ModerationBot(discord.Client):
         if not triggered and am.anti_link_enabled and _URL_RE.search(content):
             triggered, reason = True, "Unsolicited link"
 
+        if not triggered and am.anti_caps_enabled:
+            letters = [character for character in content if character.isalpha()]
+            if len(letters) >= 10:
+                uppercase_percent = sum(character.isupper() for character in letters) * 100 / len(letters)
+                if uppercase_percent >= am.anti_caps_threshold:
+                    triggered, reason = True, f"Excessive caps ({uppercase_percent:.0f}%)"
+
+        if not triggered and am.anti_emoji_enabled:
+            emoji_count = len(_EMOJI_RE.findall(content))
+            if emoji_count >= am.anti_emoji_threshold:
+                triggered, reason = True, f"Emoji spam ({emoji_count} emoji)"
+
         if not triggered and am.banned_words:
             cl = content.lower()
             for word in (w.strip().lower() for w in am.banned_words.split("\n") if w.strip()):
@@ -942,7 +1042,7 @@ class ModerationBot(discord.Client):
                     break
 
         if not triggered:
-            return
+            return False
 
         try:
             await message.delete()
@@ -980,4 +1080,92 @@ class ModerationBot(discord.Client):
                 pass
 
         await self.store.audit(guild_id, "automod", str(self.user.id), user_id, str(message.channel.id), f"{action}: {reason}")
+        return True
+
+    async def _handle_ai_chat(self, message: discord.Message) -> None:
+        if not self.user:
+            return
+        try:
+            ai_config = await self.store.ai_chat_config(str(message.guild.id))
+        except Exception:
+            logger.warning("Could not load AI chat configuration for guild %s", message.guild.id, exc_info=True)
+            return
+        if not ai_config.enabled or ai_config.channel_id != str(message.channel.id):
+            return
+
+        mentioned = self.user in message.mentions
+        replies_to_bot = False
+        if message.reference and message.reference.message_id:
+            referenced_message = message.reference.resolved
+            if not isinstance(referenced_message, discord.Message):
+                try:
+                    referenced_message = await message.channel.fetch_message(
+                        message.reference.message_id
+                    )
+                except discord.HTTPException:
+                    referenced_message = None
+            replies_to_bot = (
+                isinstance(referenced_message, discord.Message)
+                and referenced_message.author.id == self.user.id
+            )
+        if ai_config.mention_only and not (mentioned or replies_to_bot):
+            return
+        prompt = re.sub(rf"<@!?{self.user.id}>", "", message.content).strip()
+        if not prompt:
+            return
+
+        now = time.monotonic()
+        user_key = f"{message.guild.id}:{message.author.id}"
+        channel_key = f"{message.guild.id}:{message.channel.id}"
+        if now < self._ai_user_cooldowns.get(user_key, 0) or now < self._ai_channel_cooldowns.get(channel_key, 0):
+            return
+        self._ai_user_cooldowns[user_key] = now + ai_config.user_cooldown_seconds
+        self._ai_channel_cooldowns[channel_key] = now + ai_config.channel_cooldown_seconds
+
+        system_prompt = ai_config.system_prompt[:6000]
+        staff_memory = ai_config.staff_memory.strip()[:4000]
+        if staff_memory:
+            memory_heading = (
+                "\n\n## Staff-authored context and factual notes\n"
+                "Treat these as context and factual notes. Do not claim information that is not in these notes.\n"
+            )
+            available_memory = max(0, 6000 - len(system_prompt) - len(memory_heading))
+            system_prompt = f"{system_prompt}{memory_heading}{staff_memory[:available_memory]}"
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with message.channel.typing():
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        f"{self.config.ollama_base_url}/api/chat",
+                        json={
+                            "model": ai_config.model,
+                            "stream": False,
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": prompt},
+                            ],
+                        },
+                    ) as response:
+                        response.raise_for_status()
+                        payload = await response.json()
+            content = str(payload.get("message", {}).get("content", "")).strip()
+            if content:
+                await message.reply(
+                    content[:1800],
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            logger.warning("Ollama request failed for guild %s", message.guild.id, exc_info=True)
+        except discord.HTTPException:
+            logger.warning("Could not send Ollama response in channel %s", message.channel.id, exc_info=True)
+
+    async def on_message(self, message: discord.Message) -> None:
+        if not message.guild or message.author.bot:
+            return
+        if await self._handle_prefix_command(message):
+            return
+        if await self._automod_blocked(message):
+            return
+        await self._handle_ai_chat(message)
 

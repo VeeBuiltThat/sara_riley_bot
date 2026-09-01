@@ -1,0 +1,30 @@
+{% extends 'base.html' %}{% block content %}<div class="page-heading">
+    <div><span class="eyebrow">Records</span>
+        <h1>Warnings</h1>
+        <p>Moderation warnings issued in this server.</p>
+    </div><span class="count-chip">{{ rows|length }} shown</span>
+</div>
+<div class="panel table-panel">
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Case</th>
+                    <th>User ID</th>
+                    <th>Moderator ID</th>
+                    <th>Reason</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>{% for r in rows %}<tr>
+                    <td>#{{ r.id }}</td>
+                    <td class="mono">{{ r.user_id }}</td>
+                    <td class="mono">{{ r.moderator_id }}</td>
+                    <td class="reason-cell">{{ r.reason }}</td>
+                    <td>{{ r.created_at }}</td>
+                </tr>{% else %}<tr>
+                    <td colspan="5" class="empty-cell">No warnings have been issued.</td>
+                </tr>{% endfor %}</tbody>
+        </table>
+    </div>
+</div>{% endblock %}

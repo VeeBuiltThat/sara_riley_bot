@@ -4,16 +4,19 @@ services:
       context: .
       dockerfile: Dockerfile.bot
     env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+
   dashboard:
     build:
       context: .
       dockerfile: Dockerfile.dashboard
     env_file: .env
     ports:
-      - "8501:8501"
+      - "9190:8501"
     volumes:
       - ./data:/app/data
     restart: unless-stopped

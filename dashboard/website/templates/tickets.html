@@ -1,0 +1,61 @@
+{% extends 'base.html' %}{% block content %}
+<div class="page-heading">
+    <div><span class="eyebrow">Configuration</span>
+        <h1>Tickets</h1>
+        <p>Configure support ticket creation and review activity.</p>
+    </div>
+</div>
+{% if not row %}<div class="empty-state">
+    <h2>Feature not initialized</h2>
+    <p>Restart the bot once so it can create this server's ticket configuration.</p>
+</div>{% else %}<form method="post" class="panel form-stack"><input type="hidden" name="csrf_token"
+        value="{{ csrf_token() }}">
+    <div class="panel-head">
+        <div>
+            <h2>Ticket setup</h2>
+            <p>Discord IDs used when Simon "Ghost" Riley creates support tickets.</p>
+        </div>
+    </div>
+    <div class="field-grid three">
+        <div class="field"><label>Category ID</label><input name="category_id" aria-label="Category ID" value="{{ row.category_id or '' }}">
+        </div>
+        <div class="field"><label>Log channel ID</label><input name="log_channel_id" aria-label="Log channel ID"
+                value="{{ row.log_channel_id or '' }}"></div>
+        <div class="field"><label>Support role ID</label><input name="support_role_id" aria-label="Support role ID"
+                value="{{ row.support_role_id or '' }}"></div>
+        </div>
+        <div class="field"><label>Opening message</label><textarea name="welcome_message" aria-label="Opening message" rows="5"
+            maxlength="2000">{{ row.welcome_message or '' }}</textarea></div>
+    <div class="panel-actions"><button class="button primary" type="submit">Save ticket settings</button></div>
+</form>{% endif %}
+<div class="panel table-panel">
+    <div class="panel-head">
+        <div>
+            <h2>Recent tickets</h2>
+            <p>Latest 100 tickets opened in this server.</p>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Creator</th>
+                    <th>Subject</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>{% for t in tickets %}<tr>
+                    <td>#{{ t.id }}</td>
+                    <td class="mono">{{ t.creator_id }}</td>
+                    <td>{{ t.subject }}</td>
+                    <td><span class="badge {{ t.status|lower }}">{{ t.status }}</span></td>
+                    <td>{{ t.created_at }}</td>
+                </tr>{% else %}<tr>
+                    <td colspan="5" class="empty-cell">No tickets have been opened.</td>
+                </tr>{% endfor %}</tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

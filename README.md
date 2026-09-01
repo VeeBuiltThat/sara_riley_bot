@@ -1,6 +1,6 @@
-# Sentinel — Discord Moderation Bot + Streamlit Dashboard
+# Sentinel — Discord Moderation Bot + Flask Dashboard
 
-A clean moderation stack built with Go, DiscordGo, SQLite, and Streamlit.
+A Discord moderation stack with a Flask control dashboard.
 
 ## Included features
 
@@ -10,6 +10,8 @@ A clean moderation stack built with Go, DiscordGo, SQLite, and Streamlit.
 - `/warnings user`
 - `/userinfo user`
 - `/lock [reason]` and `/unlock`
+- Guild-scoped custom prefix commands managed from the dashboard
+- Opt-in Ollama casual chat in one configured channel, with mention mode and cooldowns
 - Deleted-message logging
 - Edited-message logging with before/after content when available in cache
 - Moderation audit log persisted to SQLite
@@ -31,21 +33,19 @@ The bot and dashboard share one SQLite database. The bot owns Discord interactio
 ## Local development
 
 ```bash
-cp .env.example .env
-go mod tidy
-go run ./cmd/bot
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+pip install -r bot/requirements.txt -r dashboard/website/requirements.txt
+python -m bot.main
 ```
 
 In another terminal:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\\Scripts\\activate
-pip install -r dashboard/requirements.txt
-streamlit run dashboard/app.py
+gunicorn --chdir dashboard/website --bind 0.0.0.0:8501 --workers 2 --threads 4 app:app
 ```
 
-Open `http://localhost:8501` and sign in with `DASHBOARD_PASSWORD`.
+Open `http://localhost:8501`. Configure Discord OAuth and `DASHBOARD_SECRET_KEY` in `.env` before signing in.
 
 ## Docker
 
@@ -55,6 +55,10 @@ docker compose up --build -d
 ```
 
 The dashboard is exposed on port `8501`. For internet-facing deployments, put it behind HTTPS and an authenticated reverse proxy (Cloudflare Access, Authelia, oauth2-proxy, etc.). The built-in password is a deployment baseline, not an enterprise identity provider.
+
+## Ollama chat
+
+Set `OLLAMA_BASE_URL` in `.env` when Ollama is not available at the default `http://host.docker.internal:11434`. Open **AI chat** in the dashboard, select a Discord channel, and enable it. Chat is off by default, responds only to member messages in that channel, and requires a bot mention by default. The bot sends no provider credentials and does not autonomously post messages.
 
 ## Operational notes
 

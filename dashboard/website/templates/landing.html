@@ -1,0 +1,25 @@
+{% extends 'base.html' %}{% block title %}Simons Dashboard{% endblock %}
+{% block public_content %}
+<div class="landing">
+  <nav class="landing-nav"><a class="brand" href="/"><span class="brand-mark"><img src="{{ url_for('static', filename='image.png') }}" alt=""></span><span>Simon "Ghost" Riley</span></a><a
+      class="button secondary" href="{{ url_for('login') }}">Dashboard</a></nav>
+  <section class="hero">
+    <div class="hero-copy"><span class="hero-kicker">Discord moderation, without the clutter</span>
+      <h1>Run your community from one clean control center.</h1>
+      <p>Configure moderation, automod, welcome messages, tickets, warnings and audit history from a professional
+        dashboard built for your Discord staff.</p>
+      <div class="hero-actions"><a class="button primary large" href="{{ url_for('login') }}">Continue with
+          Discord</a><span>Secure OAuth2 access</span></div>
+    </div>
+    <div class="hero-panel">
+      <img class="hero-art" src="{{ url_for('static', filename='image.png') }}" alt="Illustrated artwork for Simon Ghost Riley">
+    </div>
+  </section>
+  <section class="feature-strip">
+    <article><strong>Automod</strong><span>Spam, mentions, invites, links and banned phrases.</span></article>
+    <article><strong>Tickets</strong><span>Configure support flows and review recent tickets.</span></article>
+    <article><strong>Audit trail</strong><span>See moderation and server events in one searchable place.</span>
+    </article>
+  </section>
+</div>
+{% endblock %}

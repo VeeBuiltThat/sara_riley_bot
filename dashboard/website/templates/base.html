@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}Simon "Ghost" Riley{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+
+<body>
+  {% if user %}
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-mark"><img src="{{ url_for('static', filename='image.png') }}" alt=""></span><span>Simon "Ghost" Riley</span></a>
+      <div class="server-picker">
+        <label>Server</label>
+        <form method="post" action="{{ url_for('select_guild') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="next" value="{{ request.path }}">
+          <select name="guild_id" aria-label="Server" onchange="this.form.submit()" {% if not guilds %}disabled{% endif %}>
+            {% for g in guilds %}<option value="{{ g.guild_id }}" {% if guild and g.guild_id==guild.guild_id
+              %}selected{% endif %}>{{ g.server_name or g.guild_id }}</option>{% endfor %}
+          </select>
+        </form>
+      </div>
+      <nav class="nav">
+        <span class="nav-label">Control</span>
+        <a class="nav-item {% if active=='overview' %}active{% endif %}"
+          href="{{ url_for('dashboard') }}"><span>⌂</span>Overview</a>
+        <a class="nav-item {% if active=='settings' %}active{% endif %}"
+          href="{{ url_for('settings') }}"><span>⚙</span>Server settings</a>
+        <span class="nav-label">Configuration</span>
+        <a class="nav-item {% if active=='welcome' %}active{% endif %}"
+          href="{{ url_for('welcome') }}"><span>✦</span>Welcome & goodbye</a>
+        <a class="nav-item {% if active=='automod' %}active{% endif %}"
+          href="{{ url_for('automod') }}"><span>◈</span>Automod</a>
+        <a class="nav-item {% if active=='ai_chat' %}active{% endif %}"
+          href="{{ url_for('ai_chat') }}"><span>✦</span>AI chat</a>
+        <a class="nav-item {% if active=='custom_commands' %}active{% endif %}"
+          href="{{ url_for('custom_commands') }}"><span>!</span>Custom commands</a>
+        <a class="nav-item {% if active=='tickets' %}active{% endif %}"
+          href="{{ url_for('tickets') }}"><span>▣</span>Tickets</a>
+        <span class="nav-label">Records</span>
+        <a class="nav-item {% if active=='warnings' %}active{% endif %}"
+          href="{{ url_for('warnings') }}"><span>!</span>Warnings</a>
+        <a class="nav-item {% if active=='audit' %}active{% endif %}" href="{{ url_for('audit') }}"><span>≡</span>Audit
+          log</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-row">
+          <div class="avatar">{% if user.avatar_url %}<img src="{{ user.avatar_url }}" alt="{{ user.username }}'s Discord avatar">{% else %}{{ user.username[:1]|upper }}{% endif %}</div>
+          <div><strong>{{ user.username }}</strong><small>@{{ user.handle }}</small></div>
+        </div>
+        <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token"
+            value="{{ csrf_token() }}"><button class="text-button" type="submit">Sign out</button></form>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <button class="menu-button" type="button" data-menu>☰</button>
+        <div><span class="eyebrow">{% if guild %}{{ guild.server_name or guild.guild_id }}{% else %}Simon "Ghost" Riley{% endif
+            %}</span></div>
+        <div class="status-pill"><span></span> Bot connected</div>
+      </header>
+      <section class="content">
+        {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in
+        messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endif %}{% endwith %}
+        {% block content %}{% endblock %}
+      </section>
+    </main>
+  </div>
+  {% else %}
+  {% block public_content %}{% endblock %}
+  {% endif %}
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+
+</html>

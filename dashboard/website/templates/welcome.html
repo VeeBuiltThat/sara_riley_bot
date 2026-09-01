@@ -1,0 +1,47 @@
+{% extends 'base.html' %}{% block content %}
+<div class="page-heading">
+    <div><span class="eyebrow">Configuration</span>
+        <h1>Welcome & goodbye</h1>
+        <p>Make member arrivals and departures feel intentional.</p>
+    </div>
+</div>
+{% if not row %}<div class="empty-state">
+    <h2>Feature not initialized</h2>
+    <p>Restart the bot once so it can create this server's welcome configuration.</p>
+</div>{% else %}<form method="post" class="form-stack"><input type="hidden" name="csrf_token"
+        value="{{ csrf_token() }}">
+    <div class="split-panels">
+        <div class="panel">
+            <div class="panel-head">
+                <div>
+                    <h2>Welcome message</h2>
+                    <p>Sent when a member joins.</p>
+                </div><label class="switch-only"><input type="checkbox" name="welcome_enabled" aria-label="Enable welcome message" {% if row.welcome_enabled
+                        %}checked{% endif %}><i></i></label>
+            </div>
+                <div class="field"><label>Channel ID</label><input name="welcome_channel_id" aria-label="Welcome channel ID"
+                    value="{{ row.welcome_channel_id or '' }}"></div>
+                <div class="field"><label>Message</label><textarea name="welcome_message" aria-label="Welcome message" rows="7"
+                    maxlength="2000">{{ row.welcome_message or '' }}</textarea></div>
+        </div>
+        <div class="panel">
+            <div class="panel-head">
+                <div>
+                    <h2>Goodbye message</h2>
+                    <p>Sent when a member leaves.</p>
+                </div><label class="switch-only"><input type="checkbox" name="goodbye_enabled" aria-label="Enable goodbye message" {% if row.goodbye_enabled
+                        %}checked{% endif %}><i></i></label>
+            </div>
+                <div class="field"><label>Channel ID</label><input name="goodbye_channel_id" aria-label="Goodbye channel ID"
+                    value="{{ row.goodbye_channel_id or '' }}"></div>
+                <div class="field"><label>Message</label><textarea name="goodbye_message" aria-label="Goodbye message" rows="7"
+                    maxlength="2000">{{ row.goodbye_message or '' }}</textarea></div>
+        </div>
+    </div>
+    <div class="hint-box"><strong>Available
+            variables</strong><code>{user}</code><code>{username}</code><code>{server}</code><code>{member_count}</code>
+    </div>
+    <div class="sticky-actions"><span>Messages can be up to 2,000 characters.</span><button class="button primary"
+            type="submit">Save changes</button></div>
+</form>{% endif %}
+{% endblock %}

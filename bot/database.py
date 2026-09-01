@@ -46,6 +46,8 @@ class WelcomeConfig:
 class AutomodConfig:
     guild_id: str
     enabled: bool = False
+    exempt_role_ids: str = ""
+    exempt_channel_ids: str = ""
     anti_spam_enabled: bool = False
     anti_spam_threshold: int = 5
     anti_spam_interval: int = 5
@@ -53,8 +55,25 @@ class AutomodConfig:
     anti_mention_threshold: int = 5
     anti_invite_enabled: bool = False
     anti_link_enabled: bool = False
+    anti_caps_enabled: bool = False
+    anti_caps_threshold: int = 70
+    anti_emoji_enabled: bool = False
+    anti_emoji_threshold: int = 10
     banned_words: str = ""
     action: str = "warn"
+
+
+@dataclass
+class AIChatConfig:
+    guild_id: str
+    enabled: bool = False
+    channel_id: str = ""
+    mention_only: bool = True
+    model: str = "llama3.2:3b"
+    system_prompt: str = "You are a concise, friendly Discord bot. Keep replies helpful and natural."
+    staff_memory: str = ""
+    user_cooldown_seconds: int = 30
+    channel_cooldown_seconds: int = 8
 
 
 @dataclass
@@ -85,6 +104,15 @@ class Reminder:
     channel_id: str
     message: str
     due_at: datetime
+
+
+@dataclass
+class CustomCommand:
+    id: int
+    guild_id: str
+    trigger: str
+    response: str
+    enabled: bool
 
 
 class Store:
@@ -177,6 +205,12 @@ class Store:
                 anti_mention_threshold INT NOT NULL DEFAULT 5,
                 anti_invite_enabled TINYINT(1) NOT NULL DEFAULT 0,
                 anti_link_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                exempt_role_ids VARCHAR(1000) NOT NULL DEFAULT '',
+                exempt_channel_ids VARCHAR(1000) NOT NULL DEFAULT '',
+                anti_caps_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                anti_caps_threshold INT NOT NULL DEFAULT 70,
+                anti_emoji_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                anti_emoji_threshold INT NOT NULL DEFAULT 10,
                 banned_words VARCHAR(4000) NOT NULL DEFAULT '',
                 action VARCHAR(10) NOT NULL DEFAULT 'warn',
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -214,10 +248,36 @@ class Store:
                 PRIMARY KEY (id),
                 INDEX idx_reminders_due (due_at)
             ) CHARACTER SET utf8mb4;""",
+            """CREATE TABLE IF NOT EXISTS custom_commands (
+                id INT NOT NULL AUTO_INCREMENT,
+                guild_id VARCHAR(20) NOT NULL,
+                `trigger` VARCHAR(32) NOT NULL,
+                response VARCHAR(2000) NOT NULL,
+                enabled TINYINT(1) NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                UNIQUE KEY uq_custom_commands_guild_trigger (guild_id, `trigger`),
+                INDEX idx_custom_commands_lookup (guild_id, `trigger`, enabled)
+            ) CHARACTER SET utf8mb4;""",
+            """CREATE TABLE IF NOT EXISTS ai_chat_config (
+                guild_id VARCHAR(20) NOT NULL,
+                enabled TINYINT(1) NOT NULL DEFAULT 0,
+                channel_id VARCHAR(20) NOT NULL DEFAULT '',
+                mention_only TINYINT(1) NOT NULL DEFAULT 1,
+                model VARCHAR(100) NOT NULL DEFAULT 'llama3.2:3b',
+                system_prompt VARCHAR(2000) NOT NULL DEFAULT 'You are a concise, friendly Discord bot. Keep replies helpful and natural.',
+                staff_memory TEXT NOT NULL DEFAULT '',
+                user_cooldown_seconds INT NOT NULL DEFAULT 30,
+                channel_cooldown_seconds INT NOT NULL DEFAULT 8,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (guild_id)
+            ) CHARACTER SET utf8mb4;""",
         ]
         table_names = [
             "guild_settings", "warnings", "audit_events", "channel_locks",
             "welcome_config", "automod_config", "tickets", "ticket_config", "reminders",
+            "custom_commands", "ai_chat_config",
         ]
         # Columns added after initial release — safe no-op when they already exist
         alters = [
@@ -226,6 +286,13 @@ class Store:
             "ALTER TABLE guild_settings ADD COLUMN admin_role_id VARCHAR(20) NOT NULL DEFAULT ''",
             "ALTER TABLE guild_settings ADD COLUMN mod_role_id VARCHAR(20) NOT NULL DEFAULT ''",
             "ALTER TABLE guild_settings ADD COLUMN mod_commands_enabled TINYINT(1) NOT NULL DEFAULT 1",
+            "ALTER TABLE automod_config ADD COLUMN exempt_role_ids VARCHAR(1000) NOT NULL DEFAULT ''",
+            "ALTER TABLE automod_config ADD COLUMN exempt_channel_ids VARCHAR(1000) NOT NULL DEFAULT ''",
+            "ALTER TABLE automod_config ADD COLUMN anti_caps_enabled TINYINT(1) NOT NULL DEFAULT 0",
+            "ALTER TABLE automod_config ADD COLUMN anti_caps_threshold INT NOT NULL DEFAULT 70",
+            "ALTER TABLE automod_config ADD COLUMN anti_emoji_enabled TINYINT(1) NOT NULL DEFAULT 0",
+            "ALTER TABLE automod_config ADD COLUMN anti_emoji_threshold INT NOT NULL DEFAULT 10",
+            "ALTER TABLE ai_chat_config ADD COLUMN staff_memory TEXT NOT NULL DEFAULT ''",
         ]
         async with self._pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -440,7 +507,9 @@ class Store:
                 await cur.execute(
                     "SELECT guild_id, enabled, anti_spam_enabled, anti_spam_threshold,"
                     " anti_spam_interval, anti_mention_enabled, anti_mention_threshold,"
-                    " anti_invite_enabled, anti_link_enabled, banned_words, action"
+                    " anti_invite_enabled, anti_link_enabled, exempt_role_ids, exempt_channel_ids,"
+                    " anti_caps_enabled, anti_caps_threshold, anti_emoji_enabled, anti_emoji_threshold,"
+                    " banned_words, action"
                     " FROM automod_config WHERE guild_id=%s",
                     (guild_id,),
                 )
@@ -452,7 +521,10 @@ class Store:
             anti_spam_enabled=bool(row[2]), anti_spam_threshold=row[3], anti_spam_interval=row[4],
             anti_mention_enabled=bool(row[5]), anti_mention_threshold=row[6],
             anti_invite_enabled=bool(row[7]), anti_link_enabled=bool(row[8]),
-            banned_words=row[9] or "", action=row[10] or "warn",
+            exempt_role_ids=row[9] or "", exempt_channel_ids=row[10] or "",
+            anti_caps_enabled=bool(row[11]), anti_caps_threshold=row[12],
+            anti_emoji_enabled=bool(row[13]), anti_emoji_threshold=row[14],
+            banned_words=row[15] or "", action=row[16] or "warn",
         )
 
     async def save_automod_config(
@@ -461,6 +533,9 @@ class Store:
         anti_spam_enabled: bool, anti_spam_threshold: int, anti_spam_interval: int,
         anti_mention_enabled: bool, anti_mention_threshold: int,
         anti_invite_enabled: bool, anti_link_enabled: bool,
+        exempt_role_ids: str, exempt_channel_ids: str,
+        anti_caps_enabled: bool, anti_caps_threshold: int,
+        anti_emoji_enabled: bool, anti_emoji_threshold: int,
         banned_words: str, action: str,
     ) -> None:
         async with self._pool.acquire() as conn:
@@ -470,13 +545,47 @@ class Store:
                     " SET enabled=%s, anti_spam_enabled=%s, anti_spam_threshold=%s,"
                     "     anti_spam_interval=%s, anti_mention_enabled=%s, anti_mention_threshold=%s,"
                     "     anti_invite_enabled=%s, anti_link_enabled=%s,"
+                    "     exempt_role_ids=%s, exempt_channel_ids=%s,"
+                    "     anti_caps_enabled=%s, anti_caps_threshold=%s,"
+                    "     anti_emoji_enabled=%s, anti_emoji_threshold=%s,"
                     "     banned_words=%s, action=%s, updated_at=CURRENT_TIMESTAMP"
                     " WHERE guild_id=%s",
                     (int(enabled), int(anti_spam_enabled), anti_spam_threshold, anti_spam_interval,
                      int(anti_mention_enabled), anti_mention_threshold,
                      int(anti_invite_enabled), int(anti_link_enabled),
+                     exempt_role_ids, exempt_channel_ids,
+                     int(anti_caps_enabled), anti_caps_threshold,
+                     int(anti_emoji_enabled), anti_emoji_threshold,
                      banned_words, action, guild_id),
                 )
+
+    # ------------------------------------------------------------------ #
+    # AI chat                                                              #
+    # ------------------------------------------------------------------ #
+
+    async def ai_chat_config(self, guild_id: str) -> AIChatConfig:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO ai_chat_config (guild_id) VALUES (%s)"
+                    " ON DUPLICATE KEY UPDATE guild_id=guild_id",
+                    (guild_id,),
+                )
+                await cur.execute(
+                    "SELECT guild_id, enabled, channel_id, mention_only, model, system_prompt,"
+                    " staff_memory, user_cooldown_seconds, channel_cooldown_seconds"
+                    " FROM ai_chat_config WHERE guild_id=%s",
+                    (guild_id,),
+                )
+                row = await cur.fetchone()
+        if not row:
+            return AIChatConfig(guild_id=guild_id)
+        return AIChatConfig(
+            guild_id=row[0], enabled=bool(row[1]), channel_id=row[2] or "",
+            mention_only=bool(row[3]), model=row[4] or "llama3.2:3b",
+            system_prompt=row[5] or "You are a concise, friendly Discord bot. Keep replies helpful and natural.",
+            staff_memory=row[6] or "", user_cooldown_seconds=row[7], channel_cooldown_seconds=row[8],
+        )
 
     # ------------------------------------------------------------------ #
     # Tickets                                                              #
@@ -611,4 +720,24 @@ class Store:
                     (reminder_id, user_id),
                 )
                 return cur.rowcount > 0
+
+    # ------------------------------------------------------------------ #
+    # Custom commands                                                      #
+    # ------------------------------------------------------------------ #
+
+    async def custom_command(self, guild_id: str, trigger: str) -> Optional[CustomCommand]:
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT id, guild_id, `trigger`, response, enabled"
+                    " FROM custom_commands"
+                    " WHERE guild_id=%s AND `trigger`=%s AND enabled=1",
+                    (guild_id, trigger),
+                )
+                row = await cur.fetchone()
+        if not row:
+            return None
+        return CustomCommand(
+            id=row[0], guild_id=row[1], trigger=row[2], response=row[3], enabled=bool(row[4])
+        )
 

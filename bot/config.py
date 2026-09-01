@@ -15,6 +15,8 @@ class Config:
         default_owner_role_id: str,
         default_admin_role_id: str,
         default_mod_role_id: str,
+        command_prefix: str,
+        ollama_base_url: str,
     ):
         self.discord_token = discord_token
         self.guild_id = guild_id
@@ -27,6 +29,8 @@ class Config:
         self.default_owner_role_id = default_owner_role_id
         self.default_admin_role_id = default_admin_role_id
         self.default_mod_role_id = default_mod_role_id
+        self.command_prefix = command_prefix
+        self.ollama_base_url = ollama_base_url
 
 
 def load() -> Config:
@@ -41,6 +45,8 @@ def load() -> Config:
     default_owner_role_id = os.getenv("DEFAULT_OWNER_ROLE_ID", "")
     default_admin_role_id = os.getenv("DEFAULT_ADMIN_ROLE_ID", "")
     default_mod_role_id = os.getenv("DEFAULT_MOD_ROLE_ID", "")
+    command_prefix = os.getenv("COMMAND_PREFIX", "!").strip()[:5] or "!"
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
     if not token:
         raise ValueError("DISCORD_TOKEN is required")
     if not db_name:
@@ -48,4 +54,5 @@ def load() -> Config:
     return Config(
         token, guild_id, db_host, db_port, db_name, db_user, db_password,
         default_log_channel_id, default_owner_role_id, default_admin_role_id, default_mod_role_id,
+        command_prefix, ollama_base_url,
     )
