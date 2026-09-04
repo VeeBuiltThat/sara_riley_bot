@@ -307,8 +307,11 @@ class Store:
                 for alter in alters:
                     try:
                         await cur.execute(alter)
-                    except Exception:
-                        pass
+                    except aiomysql.Error as e:
+                        # 1060 = Duplicate column name (column already exists) — safe to ignore
+                        if e.args and e.args[0] == 1060:
+                            continue
+                        raise
 
     async def settings(
         self,
